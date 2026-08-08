@@ -1,0 +1,249 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UnitKind {
+  COUNTED
+  WEIGHED
+}
+
+enum ProductStatus {
+  DRAFT
+  PENDING_APPROVAL
+  ACTIVE
+  UNPUBLISHED
+  ARCHIVED
+}
+
+enum PriceBookKind {
+  RETAIL
+  WHOLESALE
+  CUSTOMER
+}
+
+enum Channel {
+  POS
+  KIOSK
+  ECOMMERCE
+  WHOLESALE
+}
+
+model Location {
+  id             String              @id @default(uuid()) @db.Uuid
+  code           String              @unique
+  name           String
+  city           String              @default("Chennai")
+  timezone       String              @default("Asia/Kolkata")
+  active         Boolean             @default(true)
+  capabilities   Json
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  visibility     ChannelVisibility[]
+  balances       InventoryBalance[]
+  inventoryMoves InventoryLedger[]
+
+  @@map("locations")
+}
+
+model Unit {
+  id        String     @id @default(uuid()) @db.Uuid
+  code      String     @unique
+  name      String
+  symbol    String
+  kind      UnitKind
+  createdAt DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  products  Product[]
+
+  @@map("units")
+}
+
+model Category {
+  id          String    @id @default(uuid()) @db.Uuid
+  code        String    @unique
+  nameEnglish String    @map("name_english")
+  nameTamil   String?   @map("name_tamil")
+  active      Boolean   @default(true)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  products    Product[]
+
+  @@map("categories")
+}
+
+model TaxProfile {
+  id             String    @id @default(uuid()) @db.Uuid
+  code           String    @unique
+  name           String
+  gstRateBasisPt Int       @map("gst_rate_basis_points")
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  products       Product[]
+
+  @@map("tax_profiles")
+}
+
+model Product {
+  id                    String              @id @default(uuid()) @db.Uuid
+  sku                   String              @unique
+  barcode               String?             @unique
+  nameEnglish           String              @map("name_english")
+  nameTamil             String?             @map("name_tamil")
+  hsnCode               String?             @map("hsn_code")
+  status                ProductStatus       @default(DRAFT)
+  unitKind              UnitKind            @map("unit_kind")
+  minimumQuantityBase   BigInt              @default(1) @map("minimum_quantity_base")
+  maximumQuantityBase   BigInt?             @map("maximum_quantity_base")
+  quantityIncrementBase BigInt              @default(1) @map("quantity_increment_base")
+  categoryId            String              @map("category_id") @db.Uuid
+  baseUnitId            String              @map("base_unit_id") @db.Uuid
+  taxProfileId          String              @map("tax_profile_id") @db.Uuid
+  createdAt             DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  category              Category            @relation(fields: [categoryId], references: [id])
+  baseUnit              Unit                @relation(fields: [baseUnitId], references: [id])
+  taxProfile            TaxProfile          @relation(fields: [taxProfileId], references: [id])
+  visibility            ChannelVisibility[]
+  priceRules            PriceRule[]
+  balances              InventoryBalance[]
+  inventoryMoves        InventoryLedger[]
+  suppliers             ProductSupplier[]
+
+  @@index([categoryId, status])
+  @@map("products")
+}
+
+model ChannelVisibility {
+  id         String   @id @default(uuid()) @db.Uuid
+  productId  String   @map("product_id") @db.Uuid
+  locationId String   @map("location_id") @db.Uuid
+  channel    Channel
+  enabled    Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  product    Product  @relation(fields: [productId], references: [id])
+  location   Location @relation(fields: [locationId], references: [id])
+
+  @@unique([productId, locationId, channel])
+  @@index([locationId, channel, enabled])
+  @@map("channel_visibility")
+}
+
+model PriceBook {
+  id        String        @id @default(uuid()) @db.Uuid
+  code      String        @unique
+  name      String
+  kind      PriceBookKind
+  currency  String        @default("INR")
+  active    Boolean       @default(true)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+  rules     PriceRule[]
+
+  @@map("price_books")
+}
+
+model PriceRule {
+  id                String    @id @default(uuid()) @db.Uuid
+  priceBookId       String    @map("price_book_id") @db.Uuid
+  productId         String    @map("product_id") @db.Uuid
+  minimumQuantity   BigInt    @default(1) @map("minimum_quantity_base")
+  priceAmountPaise  Int       @map("price_amount_paise")
+  priceQuantityBase BigInt    @map("price_quantity_base")
+  active            Boolean   @default(true)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+  priceBook         PriceBook @relation(fields: [priceBookId], references: [id])
+  product           Product   @relation(fields: [productId], references: [id])
+
+  @@unique([priceBookId, productId, minimumQuantity])
+  @@index([productId, active])
+  @@map("price_rules")
+}
+
+model InventoryBalance {
+  id           String   @id @default(uuid()) @db.Uuid
+  productId    String   @map("product_id") @db.Uuid
+  locationId   String   @map("location_id") @db.Uuid
+  onHandBase   BigInt   @default(0) @map("on_hand_base")
+  reservedBase BigInt   @default(0) @map("reserved_base")
+  version      Int      @default(0)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  product      Product  @relation(fields: [productId], references: [id])
+  location     Location @relation(fields: [locationId], references: [id])
+
+  @@unique([productId, locationId])
+  @@index([locationId])
+  @@map("inventory_balances")
+}
+
+model InventoryLedger {
+  id               String   @id @default(uuid()) @db.Uuid
+  productId        String   @map("product_id") @db.Uuid
+  locationId       String   @map("location_id") @db.Uuid
+  onHandDeltaBase  BigInt   @default(0) @map("on_hand_delta_base")
+  reservedDeltaBase BigInt  @default(0) @map("reserved_delta_base")
+  reason           String
+  sourceType       String   @map("source_type")
+  sourceReference  String   @unique @map("source_reference")
+  notes            String?
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  product          Product  @relation(fields: [productId], references: [id])
+  location         Location @relation(fields: [locationId], references: [id])
+
+  @@index([productId, locationId, createdAt])
+  @@map("inventory_ledger")
+}
+
+model Supplier {
+  id          String            @id @default(uuid()) @db.Uuid
+  code        String            @unique
+  name        String
+  active      Boolean           @default(true)
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime          @updatedAt @map("updated_at") @db.Timestamptz(3)
+  products    ProductSupplier[]
+
+  @@map("suppliers")
+}
+
+model ProductSupplier {
+  productId  String   @map("product_id") @db.Uuid
+  supplierId String   @map("supplier_id") @db.Uuid
+  preferred  Boolean  @default(false)
+  product    Product  @relation(fields: [productId], references: [id])
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+
+  @@id([productId, supplierId])
+  @@map("product_suppliers")
+}
+
+model AppSetting {
+  key         String   @id
+  value       Json
+  description String?
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("app_settings")
+}
+
+model AuditEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  eventType    String   @map("event_type")
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  actorType    String   @map("actor_type")
+  actorId      String?  @map("actor_id")
+  payload      Json
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_events")
+}
+

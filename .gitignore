@@ -1,0 +1,20 @@
+node_modules/
+.pnpm-store/
+.next/
+dist/
+coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Runtime uploads (keep the mount point only)
+uploads/*
+!uploads/.gitkeep
+
+# Local tooling
+.DS_Store
+*.log
+npm-debug.log*

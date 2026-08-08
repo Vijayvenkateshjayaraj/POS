@@ -1,0 +1,1347 @@
+'use client';
+
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+
+type Page = 'billing' | 'inventory' | 'deliveries' | 'customers' | 'bills';
+type StockStatus = 'In stock' | 'Low stock' | 'Out of stock';
+type DeliveryStatus = 'Pending' | 'Out for delivery' | 'Delivered' | 'Failed';
+type RestaurantStatus = 'Active' | 'On hold';
+
+type Product = {
+  id: number;
+  name: string;
+  short: string;
+  sku: string;
+  category: string;
+  unit: string;
+  price: number;
+  stock: number;
+  reorder: number;
+  color: string;
+  shop: string;
+};
+
+type CartLine = Product & { lineId: number; quantity: number };
+
+type Customer = {
+  id: number;
+  name: string;
+  phone: string;
+  address: string;
+  visits: number;
+  totalSpent: number;
+  topItem: string;
+  lastVisit: string;
+};
+
+type Bill = {
+  id: string;
+  customer: string;
+  phone: string;
+  date: string;
+  time: string;
+  items: Array<{ name: string; quantity: number; price: number }>;
+  amount: number;
+  payment: string;
+  status: 'Paid' | 'Pending' | 'Refunded';
+  shop: string;
+};
+
+type Delivery = {
+  id: string;
+  billId: string;
+  customer: string;
+  phone: string;
+  address: string;
+  status: DeliveryStatus;
+  slot: string;
+  updated: string;
+  driver: string;
+};
+
+type Restaurant = {
+  id: number;
+  name: string;
+  contact: string;
+  phone: string;
+  email: string;
+  address: string;
+  area: string;
+  gstin: string;
+  deliverySlot: string;
+  creditLimit: number;
+  outstanding: number;
+  totalOrders: number;
+  totalSpent: number;
+  lastOrder: string;
+  nextDelivery: string;
+  status: RestaurantStatus;
+  notes: string;
+};
+
+type RestaurantBillingDetails = Pick<Restaurant, 'contact' | 'email' | 'area' | 'gstin' | 'deliverySlot' | 'creditLimit'> & { id?: number };
+
+const initialProducts: Product[] = [
+  { id: 1, name: 'Ponni Boiled Rice', short: 'PR', sku: 'RIC-PON-01', category: 'Grains', unit: 'kg', price: 72, stock: 84, reorder: 20, color: '#e7c772', shop: 'Anna Nagar' },
+  { id: 2, name: 'Toor Dal Premium', short: 'TD', sku: 'DAL-TOO-02', category: 'Pulses', unit: 'kg', price: 168, stock: 12, reorder: 15, color: '#e9a94f', shop: 'Anna Nagar' },
+  { id: 3, name: 'Gingelly Oil', short: 'GO', sku: 'OIL-GIN-01', category: 'Oils', unit: '1 L', price: 349, stock: 31, reorder: 10, color: '#d08c3d', shop: 'Ayyanambakkam' },
+  { id: 4, name: 'Aashirvaad Atta', short: 'AA', sku: 'FLO-AAT-05', category: 'Flour', unit: '5 kg', price: 292, stock: 9, reorder: 12, color: '#c97a57', shop: 'Anna Nagar' },
+  { id: 5, name: 'Crystal Salt', short: 'CS', sku: 'SPI-SAL-01', category: 'Spices', unit: '1 kg', price: 28, stock: 120, reorder: 30, color: '#91aaba', shop: 'Ayyanambakkam' },
+  { id: 6, name: 'Jaggery Cubes', short: 'JC', sku: 'SUG-JAG-01', category: 'Sweeteners', unit: 'kg', price: 86, stock: 0, reorder: 10, color: '#9e6d43', shop: 'Anna Nagar' },
+  { id: 7, name: 'Idli Rice', short: 'IR', sku: 'RIC-IDL-05', category: 'Grains', unit: '5 kg', price: 365, stock: 46, reorder: 12, color: '#d8c9a2', shop: 'Ayyanambakkam' },
+  { id: 8, name: 'Urad Dal Whole', short: 'UD', sku: 'DAL-URA-01', category: 'Pulses', unit: 'kg', price: 192, stock: 23, reorder: 15, color: '#7c7069', shop: 'Anna Nagar' },
+];
+
+const initialCustomers: Customer[] = [
+  { id: 1, name: 'Ananya Raman', phone: '+91 98402 17452', address: '12, 4th Avenue, Anna Nagar, Chennai', visits: 18, totalSpent: 28460, topItem: 'Ponni Boiled Rice', lastVisit: 'Today, 10:42 AM' },
+  { id: 2, name: 'Karthik S', phone: '+91 99624 80311', address: 'Mogappair East, Chennai', visits: 11, totalSpent: 17820, topItem: 'Gingelly Oil', lastVisit: 'Yesterday' },
+  { id: 3, name: 'Sangeetha Stores', phone: '+91 98845 77218', address: 'Vanagaram Main Road, Chennai', visits: 32, totalSpent: 84250, topItem: 'Toor Dal Premium', lastVisit: '06 Aug 2026' },
+  { id: 4, name: 'Mohammed Imran', phone: '+91 97911 64209', address: 'Nolambur, Chennai', visits: 7, totalSpent: 9340, topItem: 'Idli Rice', lastVisit: '03 Aug 2026' },
+  { id: 5, name: 'Priya Narayanan', phone: '+91 99401 51726', address: 'Shanthi Colony, Anna Nagar', visits: 9, totalSpent: 12490, topItem: 'Aashirvaad Atta', lastVisit: '30 Jul 2026' },
+  { id: 6, name: 'Ramesh Kumar', phone: '+91 98410 28641', address: 'Ambattur, Chennai', visits: 14, totalSpent: 21680, topItem: 'Ponni Boiled Rice', lastVisit: '29 Jul 2026' },
+  { id: 7, name: 'Lakshmi Vilas Stores', phone: '+91 98842 19573', address: 'Maduravoyal, Chennai', visits: 25, totalSpent: 62540, topItem: 'Toor Dal Premium', lastVisit: '28 Jul 2026' },
+  { id: 8, name: 'Deepa Krishnan', phone: '+91 97890 41327', address: 'Korattur, Chennai', visits: 6, totalSpent: 7890, topItem: 'Gingelly Oil', lastVisit: '26 Jul 2026' },
+  { id: 9, name: 'Balaji Provisions', phone: '+91 99627 58419', address: 'Padi, Chennai', visits: 21, totalSpent: 48730, topItem: 'Urad Dal Whole', lastVisit: '24 Jul 2026' },
+  { id: 10, name: 'Naveen Raj', phone: '+91 97908 25164', address: 'Koyambedu, Chennai', visits: 5, totalSpent: 6340, topItem: 'Idli Rice', lastVisit: '22 Jul 2026' },
+  { id: 11, name: 'Meenakshi Sundaram', phone: '+91 99405 73182', address: 'Arumbakkam, Chennai', visits: 13, totalSpent: 19420, topItem: 'Aashirvaad Atta', lastVisit: '20 Jul 2026' },
+  { id: 12, name: 'Vasanth Supermarket', phone: '+91 98406 42915', address: 'Nerkundram, Chennai', visits: 29, totalSpent: 76480, topItem: 'Ponni Boiled Rice', lastVisit: '18 Jul 2026' },
+  { id: 13, name: 'Revathi S', phone: '+91 98848 16730', address: 'Thirumangalam, Chennai', visits: 8, totalSpent: 10360, topItem: 'Crystal Salt', lastVisit: '16 Jul 2026' },
+  { id: 14, name: 'Saravana Agencies', phone: '+91 97898 64021', address: 'Ayanambakkam, Chennai', visits: 17, totalSpent: 39820, topItem: 'Gingelly Oil', lastVisit: '14 Jul 2026' },
+  { id: 15, name: 'Janani Prakash', phone: '+91 99621 37584', address: 'Anna Nagar West, Chennai', visits: 4, totalSpent: 5160, topItem: 'Jaggery Cubes', lastVisit: '12 Jul 2026' },
+  { id: 16, name: 'Murugan Stores', phone: '+91 97910 48263', address: 'Mogappair West, Chennai', visits: 23, totalSpent: 57940, topItem: 'Toor Dal Premium', lastVisit: '10 Jul 2026' },
+  { id: 17, name: 'Aarthi Venkatesh', phone: '+91 99404 92617', address: 'Choolaimedu, Chennai', visits: 10, totalSpent: 14280, topItem: 'Idli Rice', lastVisit: '08 Jul 2026' },
+  { id: 18, name: 'Ganesh Traders', phone: '+91 98409 31852', address: 'Porur, Chennai', visits: 27, totalSpent: 69350, topItem: 'Ponni Boiled Rice', lastVisit: '06 Jul 2026' },
+  { id: 19, name: 'Shobana M', phone: '+91 98841 75326', address: 'Villivakkam, Chennai', visits: 7, totalSpent: 8720, topItem: 'Aashirvaad Atta', lastVisit: '04 Jul 2026' },
+  { id: 20, name: 'Sri Devi Mini Mart', phone: '+91 97892 60418', address: 'Valasaravakkam, Chennai', visits: 19, totalSpent: 43610, topItem: 'Urad Dal Whole', lastVisit: '02 Jul 2026' },
+];
+
+const initialBills: Bill[] = [
+  { id: 'INV-2048', customer: 'Ananya Raman', phone: '+91 98402 17452', date: '07 Aug 2026', time: '10:42 AM', items: [{ name: 'Ponni Boiled Rice', quantity: 5, price: 72 }, { name: 'Toor Dal Premium', quantity: 2, price: 168 }], amount: 730, payment: 'UPI', status: 'Paid', shop: 'Anna Nagar' },
+  { id: 'INV-2047', customer: 'Walk-in customer', phone: '—', date: '07 Aug 2026', time: '10:18 AM', items: [{ name: 'Gingelly Oil', quantity: 1, price: 349 }, { name: 'Crystal Salt', quantity: 2, price: 28 }], amount: 405, payment: 'Cash', status: 'Paid', shop: 'Ayyanambakkam' },
+  { id: 'INV-2046', customer: 'Karthik S', phone: '+91 99624 80311', date: '07 Aug 2026', time: '9:36 AM', items: [{ name: 'Idli Rice', quantity: 2, price: 365 }], amount: 730, payment: 'Card', status: 'Paid', shop: 'Ayyanambakkam' },
+  { id: 'INV-2045', customer: 'Sangeetha Stores', phone: '+91 98845 77218', date: '06 Aug 2026', time: '6:48 PM', items: [{ name: 'Toor Dal Premium', quantity: 10, price: 168 }], amount: 1680, payment: 'Credit', status: 'Pending', shop: 'Anna Nagar' },
+  { id: 'INV-2044', customer: 'Mohammed Imran', phone: '+91 97911 64209', date: '06 Aug 2026', time: '4:22 PM', items: [{ name: 'Ponni Boiled Rice', quantity: 10, price: 72 }, { name: 'Urad Dal Whole', quantity: 1, price: 192 }], amount: 912, payment: 'UPI', status: 'Paid', shop: 'Anna Nagar' },
+  { id: 'INV-2043', customer: 'Priya Narayanan', phone: '+91 99401 51726', date: '05 Aug 2026', time: '12:14 PM', items: [{ name: 'Aashirvaad Atta', quantity: 2, price: 292 }], amount: 584, payment: 'Cash', status: 'Refunded', shop: 'Anna Nagar' },
+];
+
+const initialDeliveries: Delivery[] = [
+  { id: 'DEL-3110', billId: 'INV-2051', customer: 'Marina Grill', phone: '+91 98408 67321', address: '18, ECR Main Road, Thiruvanmiyur', status: 'Out for delivery', slot: 'Today · 2–4 PM', updated: '11:34 AM', driver: 'Selvam R' },
+  { id: 'DEL-3109', billId: 'INV-2050', customer: 'Annapoorna Bhavan', phone: '+91 99620 41857', address: '42, 2nd Avenue, Anna Nagar', status: 'Pending', slot: 'Today · 4–6 PM', updated: '10:52 AM', driver: 'Unassigned' },
+  { id: 'DEL-3108', billId: 'INV-2048', customer: 'Ananya Raman', phone: '+91 98402 17452', address: '12, 4th Avenue, Anna Nagar', status: 'Out for delivery', slot: 'Today · 12–2 PM', updated: '11:18 AM', driver: 'Ravi M' },
+  { id: 'DEL-3107', billId: 'INV-2046', customer: 'Karthik S', phone: '+91 99624 80311', address: 'Mogappair East, Chennai', status: 'Pending', slot: 'Today · 2–4 PM', updated: '10:02 AM', driver: 'Unassigned' },
+  { id: 'DEL-3106', billId: 'INV-2044', customer: 'Mohammed Imran', phone: '+91 97911 64209', address: 'Nolambur, Chennai', status: 'Delivered', slot: '06 Aug · 4–6 PM', updated: '06 Aug, 5:24 PM', driver: 'Selvam R' },
+  { id: 'DEL-3105', billId: 'INV-2042', customer: 'Meena Kumar', phone: '+91 98840 12672', address: 'Ambattur Industrial Estate', status: 'Failed', slot: '06 Aug · 2–4 PM', updated: '06 Aug, 3:48 PM', driver: 'Ravi M' },
+  { id: 'DEL-3104', billId: 'INV-2041', customer: 'Arjun V', phone: '+91 97908 34718', address: 'Anna Nagar West Extension', status: 'Delivered', slot: '05 Aug · 6–8 PM', updated: '05 Aug, 7:12 PM', driver: 'Selvam R' },
+];
+
+const initialRestaurants: Restaurant[] = [
+  { id: 101, name: 'Annapoorna Bhavan', contact: 'R. Prakash', phone: '+91 99620 41857', email: 'orders@annapoornabhavan.in', address: '42, 2nd Avenue, Anna Nagar, Chennai', area: 'Anna Nagar', gstin: '33AABFA2718D1ZP', deliverySlot: '4–6 PM', creditLimit: 75000, outstanding: 18420, totalOrders: 48, totalSpent: 386540, lastOrder: 'Today, 9:18 AM', nextDelivery: 'Today · 4–6 PM', status: 'Active', notes: 'Call the kitchen storekeeper 20 minutes before arrival.' },
+  { id: 102, name: 'Marina Grill', contact: 'Fathima Noor', phone: '+91 98408 67321', email: 'purchase@marinagrill.in', address: '18, ECR Main Road, Thiruvanmiyur, Chennai', area: 'Thiruvanmiyur', gstin: '33AAHFM6421C1Z4', deliverySlot: '2–4 PM', creditLimit: 100000, outstanding: 32680, totalOrders: 63, totalSpent: 524300, lastOrder: 'Today, 8:42 AM', nextDelivery: 'Today · 2–4 PM', status: 'Active', notes: 'Use the service entrance behind the restaurant.' },
+  { id: 103, name: 'Copper Chimney Kitchen', contact: 'Naveen Kumar', phone: '+91 97911 80462', email: 'stores@copperkitchen.in', address: '7, Nelson Manickam Road, Aminjikarai, Chennai', area: 'Aminjikarai', gstin: '33AACFC9182F1ZS', deliverySlot: '10 AM–12 PM', creditLimit: 60000, outstanding: 0, totalOrders: 37, totalSpent: 292840, lastOrder: '06 Aug 2026', nextDelivery: '10 Aug · 10 AM–12 PM', status: 'Active', notes: 'GST invoice must be included with every delivery.' },
+  { id: 104, name: 'Dindigul Spice House', contact: 'S. Karthikeyan', phone: '+91 98844 17620', email: 'accounts@dindigulspice.in', address: '113, Arcot Road, Vadapalani, Chennai', area: 'Vadapalani', gstin: '33AAGFD7624N1Z8', deliverySlot: '12–2 PM', creditLimit: 50000, outstanding: 12750, totalOrders: 29, totalSpent: 214690, lastOrder: '05 Aug 2026', nextDelivery: '11 Aug · 12–2 PM', status: 'Active', notes: 'Collect signed delivery challan at the receiving desk.' },
+  { id: 105, name: 'Basil & Bean Cafe', contact: 'Meera Joseph', phone: '+91 99403 72518', email: 'hello@basilbean.in', address: '26, 6th Street, Nungambakkam, Chennai', area: 'Nungambakkam', gstin: '33AARFB5217J1Z6', deliverySlot: '8–10 AM', creditLimit: 35000, outstanding: 8400, totalOrders: 21, totalSpent: 148260, lastOrder: '03 Aug 2026', nextDelivery: '09 Aug · 8–10 AM', status: 'Active', notes: 'Deliver before the cafe opens at 10 AM.' },
+  { id: 106, name: 'Madras Tiffin Room', contact: 'V. Gopal', phone: '+91 97890 64273', email: 'procurement@madrasroom.in', address: '9, MTH Road, Ambattur, Chennai', area: 'Ambattur', gstin: '33AAQFM1834P1ZT', deliverySlot: '6–8 AM', creditLimit: 45000, outstanding: 45000, totalOrders: 34, totalSpent: 268100, lastOrder: '28 Jul 2026', nextDelivery: 'On hold', status: 'On hold', notes: 'Account paused until the outstanding balance is cleared.' },
+];
+
+const navItems: Array<{ id: Page; label: string; icon: string }> = [
+  { id: 'billing', label: 'Billing', icon: '▤' },
+  { id: 'inventory', label: 'Inventory', icon: '□' },
+  { id: 'deliveries', label: 'Deliveries', icon: '⌁' },
+  { id: 'customers', label: 'Customers', icon: '◎' },
+  { id: 'bills', label: 'All bills', icon: '≡' },
+];
+
+const money = (value: number) =>
+  new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value);
+
+function stockStatus(product: Product): StockStatus {
+  if (product.stock === 0) return 'Out of stock';
+  if (product.stock <= product.reorder) return 'Low stock';
+  return 'In stock';
+}
+
+function initials(name: string) {
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join('')
+    .toUpperCase();
+}
+
+export default function Home() {
+  const [page, setPage] = useState<Page>('billing');
+  const [products, setProducts] = useState(initialProducts);
+  const [customers, setCustomers] = useState(initialCustomers);
+  const [restaurants, setRestaurants] = useState(initialRestaurants);
+  const [bills, setBills] = useState(initialBills);
+  const [deliveries, setDeliveries] = useState(initialDeliveries);
+  const [cart, setCart] = useState<CartLine[]>([]);
+  const nextCartLineId = useRef(1);
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
+  const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
+  const [customerDetail, setCustomerDetail] = useState<Customer | null>(null);
+  const [billingSession, setBillingSession] = useState(0);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [toast, setToast] = useState('');
+
+  const navigate = (next: Page) => {
+    setPage(next);
+    setCustomerDetail(null);
+    setMenuOpen(false);
+  };
+
+  const addToCart = (product: Product, initialQuantity: number) => {
+    if (product.stock === 0 || initialQuantity <= 0) return null;
+    const lineId = nextCartLineId.current++;
+    setCart((current) => [...current, { ...product, lineId, quantity: initialQuantity }]);
+    return lineId;
+  };
+
+  const setCartQuantity = (lineId: number, quantity: number) => {
+    setCart((current) => {
+      const selectedLine = current.find((item) => item.lineId === lineId);
+      if (!selectedLine) return current;
+      const allocatedToOtherLines = current.reduce((sum, item) =>
+        item.id === selectedLine.id && item.lineId !== lineId ? sum + item.quantity : sum, 0);
+      const availableForLine = Math.max(0, selectedLine.stock - allocatedToOtherLines);
+      return current.map((item) =>
+        item.lineId === lineId ? { ...item, quantity: Math.max(0, Math.min(quantity, availableForLine)) } : item,
+      );
+    });
+  };
+
+  const setCartPrice = (lineId: number, productId: number, price: number) => {
+    const nextPrice = Number(price.toFixed(2));
+    if (!Number.isFinite(nextPrice) || nextPrice <= 0) return;
+    setCart((current) => current.map((item) => item.lineId === lineId ? { ...item, price: nextPrice } : item));
+    setProducts((current) => current.map((product) => product.id === productId ? { ...product, price: nextPrice } : product));
+  };
+
+  const removeFromCart = (lineId: number) => setCart((current) => current.filter((item) => item.lineId !== lineId));
+
+  const completeBill = (details: { name: string; phone: string; address: string; payment: string; delivery: boolean; restaurant?: RestaurantBillingDetails }) => {
+    if (!cart.length) return;
+    const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+    const total = Number((subtotal * 1.05).toFixed(2));
+    const nextNumber = 2049 + (bills.length - initialBills.length);
+    const now = new Date();
+    const name = details.name.trim() || selectedRestaurant?.name || selectedCustomer?.name || 'Walk-in customer';
+    const phone = details.phone.trim() || selectedRestaurant?.phone || selectedCustomer?.phone || '—';
+    const address = details.address.trim() || selectedRestaurant?.address || selectedCustomer?.address || '';
+    const bill: Bill = {
+      id: `INV-${nextNumber}`,
+      customer: name,
+      phone,
+      date: '07 Aug 2026',
+      time: now.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }),
+      items: cart.map(({ name: itemName, quantity, price }) => ({ name: itemName, quantity, price })),
+      amount: total,
+      payment: details.payment,
+      status: details.payment === 'Credit' ? 'Pending' : 'Paid',
+      shop: 'Anna Nagar',
+    };
+
+    setBills((current) => [bill, ...current]);
+    setProducts((current) =>
+      current.map((product) => {
+        const soldQuantity = cart.reduce((sum, item) => item.id === product.id ? sum + item.quantity : sum, 0);
+        return soldQuantity ? { ...product, stock: Math.max(0, product.stock - soldQuantity) } : product;
+      }),
+    );
+
+    if (details.restaurant) {
+      const existingRestaurant = restaurants.find((restaurant) => restaurant.id === details.restaurant?.id);
+      if (existingRestaurant) {
+        setRestaurants((current) => current.map((restaurant) => restaurant.id === existingRestaurant.id ? {
+          ...restaurant,
+          ...details.restaurant,
+          name,
+          phone,
+          address,
+          totalOrders: restaurant.totalOrders + 1,
+          totalSpent: restaurant.totalSpent + total,
+          outstanding: details.payment === 'Credit' ? restaurant.outstanding + total : restaurant.outstanding,
+          lastOrder: 'Just now',
+          nextDelivery: details.delivery ? `Today · ${details.restaurant?.deliverySlot}` : restaurant.nextDelivery,
+        } : restaurant));
+      } else {
+        setRestaurants((current) => [{
+          id: Date.now(),
+          name,
+          phone,
+          address,
+          ...details.restaurant!,
+          outstanding: details.payment === 'Credit' ? total : 0,
+          totalOrders: 1,
+          totalSpent: total,
+          lastOrder: 'Just now',
+          nextDelivery: details.delivery ? `Today · ${details.restaurant!.deliverySlot}` : 'Not scheduled',
+          status: 'Active',
+          notes: 'New restaurant account — add delivery notes when available.',
+        }, ...current]);
+      }
+    } else if (name !== 'Walk-in customer' && phone !== '—') {
+      const existing = customers.find((customer) => customer.phone === phone);
+      if (existing) {
+        setCustomers((current) =>
+          current.map((customer) =>
+            customer.id === existing.id
+              ? { ...customer, visits: customer.visits + 1, totalSpent: customer.totalSpent + total, lastVisit: 'Just now' }
+              : customer,
+          ),
+        );
+      } else {
+        setCustomers((current) => [
+          {
+            id: Date.now(),
+            name,
+            phone,
+            address,
+            visits: 1,
+            totalSpent: total,
+            topItem: [...cart].sort((a, b) => b.quantity - a.quantity)[0].name,
+            lastVisit: 'Just now',
+          },
+          ...current,
+        ]);
+      }
+    }
+
+    if (details.delivery && address) {
+      setDeliveries((current) => [
+        {
+          id: `DEL-${3109 + (deliveries.length - initialDeliveries.length)}`,
+          billId: bill.id,
+          customer: name,
+          phone,
+          address,
+          status: 'Pending',
+          slot: 'Today · 4–6 PM',
+          updated: 'Just now',
+          driver: 'Unassigned',
+        },
+        ...current,
+      ]);
+    }
+
+    setCart([]);
+    setSelectedCustomer(null);
+    setSelectedRestaurant(null);
+    setSelectedBill(bill);
+    setToast(`${bill.id} created successfully`);
+    window.setTimeout(() => setToast(''), 3500);
+  };
+
+  return (
+    <div className="app-shell">
+      <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
+        <div className="brand">
+          <span className="brand-mark">SVT</span>
+          <div><strong>Sri Vijay Traders</strong><small>Billing &amp; operations</small></div>
+        </div>
+
+        <p className="nav-label">Workspace</p>
+        <nav aria-label="Primary navigation">
+          {navItems.map((item) => (
+            <button key={item.id} className={page === item.id ? 'active' : ''} onClick={() => navigate(item.id)}>
+              <span className="nav-icon" aria-hidden="true">{item.icon}</span>
+              {item.label}
+              {item.id === 'deliveries' && <span className="nav-count">2</span>}
+            </button>
+          ))}
+        </nav>
+
+        <div className="sidebar-foot">
+          <button className="help-card" onClick={() => setToast('Help centre is ready for your next workflow.') }>
+            <span className="help-icon">?</span>
+            <span><strong>Need help?</strong><small>View setup guide</small></span>
+            <b>›</b>
+          </button>
+          <div className="user-card">
+            <span className="avatar">AM</span>
+            <span><strong>Arun Manager</strong><small>Administrator</small></span>
+            <button aria-label="Account options">⋮</button>
+          </div>
+        </div>
+      </aside>
+
+      {menuOpen && <button className="backdrop" aria-label="Close menu" onClick={() => setMenuOpen(false)} />}
+
+      <main className="workspace">
+        <header className="topbar">
+          <button className="menu-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}>☰</button>
+          <div className="location-picker"><span className="location-dot" /> Anna Nagar <span>⌄</span></div>
+          <div className="topbar-actions">
+            <span className="sync-state"><i /> All changes saved</span>
+            <button className="icon-button" aria-label="Notifications">♧<span className="notification-dot" /></button>
+          </div>
+        </header>
+
+        <div hidden={page !== 'billing'}>
+          <BillingPage
+            key={`billing-${bills.length}-${billingSession}`}
+            active={page === 'billing'}
+            products={products}
+            cart={cart}
+            customers={customers}
+            restaurants={restaurants}
+            selectedCustomer={selectedCustomer}
+            selectedRestaurant={selectedRestaurant}
+            setSelectedCustomer={setSelectedCustomer}
+            setSelectedRestaurant={setSelectedRestaurant}
+            updateCustomer={(id, details) => {
+              setCustomers((current) => current.map((customer) => customer.id === id ? { ...customer, ...details } : customer));
+              setSelectedCustomer((current) => current?.id === id ? { ...current, ...details } : current);
+            }}
+            updateRestaurant={(id, details) => {
+              setRestaurants((current) => current.map((restaurant) => restaurant.id === id ? { ...restaurant, ...details } : restaurant));
+              setSelectedRestaurant((current) => current?.id === id ? { ...current, ...details } : current);
+            }}
+            addToCart={addToCart}
+            setCartQuantity={setCartQuantity}
+            setCartPrice={setCartPrice}
+            removeFromCart={removeFromCart}
+            clearCart={() => setCart([])}
+            completeBill={completeBill}
+          />
+        </div>
+        {page === 'inventory' && <InventoryPage products={products} />}
+        {page === 'deliveries' && <DeliveriesPage deliveries={deliveries} setDeliveries={setDeliveries} restaurants={restaurants} setRestaurants={setRestaurants} onNewBill={(restaurant) => { setSelectedCustomer(null); setSelectedRestaurant(restaurant); setBillingSession((current) => current + 1); navigate('billing'); }} />}
+        {page === 'customers' && (
+          <CustomersPage
+            customers={customers}
+            bills={bills}
+            detail={customerDetail}
+            setDetail={setCustomerDetail}
+            onNewBill={(customer) => { setSelectedRestaurant(null); setSelectedCustomer(customer); setBillingSession((current) => current + 1); navigate('billing'); }}
+          />
+        )}
+        {page === 'bills' && <BillsPage bills={bills} setSelectedBill={setSelectedBill} />}
+      </main>
+
+      {selectedBill && <BillDrawer bill={selectedBill} onClose={() => setSelectedBill(null)} />}
+      {toast && <div className="toast"><span>✓</span>{toast}</div>}
+    </div>
+  );
+}
+
+function PageTitle({ eyebrow, title, description, actions }: { eyebrow: string; title: string; description: string; actions?: React.ReactNode }) {
+  return (
+    <div className="page-title">
+      <div><p>{eyebrow}</p><h1>{title}</h1><span>{description}</span></div>
+      {actions && <div className="page-actions">{actions}</div>}
+    </div>
+  );
+}
+
+function BillingPage({
+  active,
+  products,
+  cart,
+  customers,
+  restaurants,
+  selectedCustomer,
+  selectedRestaurant,
+  setSelectedCustomer,
+  setSelectedRestaurant,
+  updateCustomer,
+  updateRestaurant,
+  addToCart,
+  setCartQuantity,
+  setCartPrice,
+  removeFromCart,
+  clearCart,
+  completeBill,
+}: {
+  active: boolean;
+  products: Product[];
+  cart: CartLine[];
+  customers: Customer[];
+  restaurants: Restaurant[];
+  selectedCustomer: Customer | null;
+  selectedRestaurant: Restaurant | null;
+  setSelectedCustomer: (customer: Customer | null) => void;
+  setSelectedRestaurant: (restaurant: Restaurant | null) => void;
+  updateCustomer: (id: number, details: Pick<Customer, 'name' | 'phone' | 'address'>) => void;
+  updateRestaurant: (id: number, details: Pick<Restaurant, 'name' | 'contact' | 'phone' | 'email' | 'address' | 'area' | 'gstin' | 'deliverySlot' | 'creditLimit'>) => void;
+  addToCart: (product: Product, initialQuantity: number) => number | null;
+  setCartQuantity: (lineId: number, quantity: number) => void;
+  setCartPrice: (lineId: number, productId: number, price: number) => void;
+  removeFromCart: (lineId: number) => void;
+  clearCart: () => void;
+  completeBill: (details: { name: string; phone: string; address: string; payment: string; delivery: boolean; restaurant?: RestaurantBillingDetails }) => void;
+}) {
+  const [itemQuery, setItemQuery] = useState('');
+  const [suggestionsOpen, setSuggestionsOpen] = useState(false);
+  const [activeSuggestion, setActiveSuggestion] = useState(0);
+  const [pendingProductFocus, setPendingProductFocus] = useState<number | null>(null);
+  const [productSelectionMessage, setProductSelectionMessage] = useState('');
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<number, string>>({});
+  const [priceDrafts, setPriceDrafts] = useState<Record<number, string>>({});
+  const [payment, setPayment] = useState('UPI');
+  const [delivery, setDelivery] = useState(false);
+  const [customerStep, setCustomerStep] = useState<'choose' | 'new' | 'existing' | 'review' | 'restaurant-new' | 'restaurant-existing' | 'restaurant-review' | 'ready'>(selectedRestaurant ? 'restaurant-review' : selectedCustomer ? 'review' : 'choose');
+  const [customerKind, setCustomerKind] = useState<'new' | 'existing' | 'new-restaurant' | 'existing-restaurant' | null>(selectedRestaurant ? 'existing-restaurant' : selectedCustomer ? 'existing' : null);
+  const [customerQuery, setCustomerQuery] = useState(selectedRestaurant?.name ?? selectedCustomer?.name ?? '');
+  const [restaurantQuery, setRestaurantQuery] = useState(selectedRestaurant?.name ?? '');
+  const [visibleCustomerCount, setVisibleCustomerCount] = useState(10);
+  const [originalCustomer, setOriginalCustomer] = useState<Customer | null>(selectedCustomer);
+  const [originalRestaurant, setOriginalRestaurant] = useState<Restaurant | null>(selectedRestaurant);
+  const [name, setName] = useState(selectedRestaurant?.name ?? selectedCustomer?.name ?? '');
+  const [phone, setPhone] = useState(selectedRestaurant?.phone ?? selectedCustomer?.phone ?? '');
+  const [address, setAddress] = useState(selectedRestaurant?.address ?? selectedCustomer?.address ?? '');
+  const [contact, setContact] = useState(selectedRestaurant?.contact ?? '');
+  const [email, setEmail] = useState(selectedRestaurant?.email ?? '');
+  const [area, setArea] = useState(selectedRestaurant?.area ?? '');
+  const [gstin, setGstin] = useState(selectedRestaurant?.gstin ?? '');
+  const [deliverySlot, setDeliverySlot] = useState(selectedRestaurant?.deliverySlot ?? '4–6 PM');
+  const [creditLimit, setCreditLimit] = useState(String(selectedRestaurant?.creditLimit ?? 50000));
+  const skuInputRef = useRef<HTMLInputElement>(null);
+  const normalizedItemQuery = itemQuery.trim().toLowerCase();
+  const remainingStockForProduct = (product: Product) => Math.max(0, product.stock - cart.reduce(
+    (sum, item) => item.id === product.id ? sum + item.quantity : sum,
+    0,
+  ));
+  const productSuggestions = products
+    .filter((product) => `${product.sku} ${product.name}`.toLowerCase().includes(normalizedItemQuery))
+    .sort((a, b) => Number(remainingStockForProduct(a) === 0) - Number(remainingStockForProduct(b) === 0))
+    .slice(0, 6);
+  const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const tax = Number((subtotal * 0.05).toFixed(2));
+  const totalWeight = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const customerReady = customerStep === 'ready';
+  const customerDetailsValid = Boolean(name.trim() && phone.trim());
+  const isRestaurant = customerKind === 'new-restaurant' || customerKind === 'existing-restaurant';
+  const restaurantDetailsValid = Boolean(name.trim() && contact.trim() && phone.trim() && address.trim());
+  const partyDetailsValid = isRestaurant ? restaurantDetailsValid : customerDetailsValid;
+  const filteredCustomers = customers.filter((customer) =>
+    !customerQuery.trim() || `${customer.name} ${customer.phone} ${customer.address}`.toLowerCase().includes(customerQuery.trim().toLowerCase()),
+  );
+  const suggestedCustomers = filteredCustomers.slice(0, visibleCustomerCount);
+  const hasMoreCustomers = suggestedCustomers.length < filteredCustomers.length;
+  const hasInvalidPrice = cart.some((item) => {
+    const draft = priceDrafts[item.lineId];
+    if (draft === undefined) return false;
+    const price = Number(draft);
+    return draft.trim() === '' || !Number.isFinite(price) || price <= 0;
+  });
+  const filteredRestaurants = restaurants.filter((restaurant) =>
+    !restaurantQuery.trim() || `${restaurant.name} ${restaurant.contact} ${restaurant.phone} ${restaurant.area}`.toLowerCase().includes(restaurantQuery.trim().toLowerCase()),
+  );
+
+  useEffect(() => {
+    if (active && cart.length > 0 && partyDetailsValid) setCustomerStep('ready');
+  }, [active, cart.length, partyDetailsValid]);
+
+  useEffect(() => {
+    if (!active || customerStep !== 'ready') return;
+    const focusFrame = window.requestAnimationFrame(() => skuInputRef.current?.focus());
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [active, customerStep]);
+
+  useEffect(() => {
+    if (pendingProductFocus === null) return;
+    const focusFrame = window.requestAnimationFrame(() => {
+      const quantityInput = document.getElementById(`quantity-${pendingProductFocus}`) as HTMLInputElement | null;
+      if (!quantityInput) return;
+      quantityInput.focus();
+      quantityInput.select();
+      setPendingProductFocus(null);
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [cart, pendingProductFocus]);
+
+  const selectProduct = (product: Product) => {
+    const remainingStock = remainingStockForProduct(product);
+    if (remainingStock === 0) {
+      setProductSelectionMessage(`${product.name} has no stock remaining for another row.`);
+      return;
+    }
+    const lineId = addToCart(product, Math.min(1, remainingStock));
+    if (lineId === null) return;
+    setItemQuery('');
+    setSuggestionsOpen(false);
+    setActiveSuggestion(0);
+    setPendingProductFocus(lineId);
+    setProductSelectionMessage(`${product.name} added as row ${cart.length + 1}. Enter its weight and price, then press Enter for the next row.`);
+  };
+
+  const handleSkuKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setSuggestionsOpen(true);
+      setActiveSuggestion((current) => Math.min(current + 1, Math.max(productSuggestions.length - 1, 0)));
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveSuggestion((current) => Math.max(current - 1, 0));
+    } else if (event.key === 'Escape') {
+      setSuggestionsOpen(false);
+    } else if (event.key === 'Enter' && productSuggestions.length) {
+      event.preventDefault();
+      selectProduct(productSuggestions[activeSuggestion] ?? productSuggestions[0]);
+    }
+  };
+
+  const updateWeight = (item: CartLine, value: string) => {
+    setQuantityDrafts((current) => ({ ...current, [item.lineId]: value }));
+    if (value === '') return;
+    const nextQuantity = Number(value);
+    if (Number.isFinite(nextQuantity) && nextQuantity >= 0) setCartQuantity(item.lineId, nextQuantity);
+  };
+
+  const commitWeight = (item: CartLine, moveToNextRow = false) => {
+    const draft = quantityDrafts[item.lineId];
+    const parsed = draft === undefined ? item.quantity : Number(draft);
+    const allocatedToOtherLines = cart.reduce((sum, line) =>
+      line.id === item.id && line.lineId !== item.lineId ? sum + line.quantity : sum, 0);
+    const availableForLine = Math.max(0, item.stock - allocatedToOtherLines);
+    const nextQuantity = Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, availableForLine) : item.quantity || Math.min(0.25, availableForLine);
+    setCartQuantity(item.lineId, nextQuantity);
+    setQuantityDrafts((current) => ({ ...current, [item.lineId]: String(nextQuantity) }));
+    if (moveToNextRow) {
+      const priceInput = document.getElementById(`price-${item.lineId}`) as HTMLInputElement | null;
+      priceInput?.focus();
+      priceInput?.select();
+    }
+  };
+
+  const updatePrice = (item: CartLine, value: string) => {
+    setPriceDrafts((current) => ({ ...current, [item.lineId]: value }));
+    if (value.trim() === '') return;
+    const nextPrice = Number(value);
+    if (Number.isFinite(nextPrice) && nextPrice > 0) setCartPrice(item.lineId, item.id, nextPrice);
+  };
+
+  const commitPrice = (item: CartLine, moveToNextRow = false) => {
+    const draft = priceDrafts[item.lineId];
+    const parsed = draft === undefined ? item.price : Number(draft);
+    const nextPrice = Number.isFinite(parsed) && parsed > 0 ? Number(parsed.toFixed(2)) : item.price;
+    setCartPrice(item.lineId, item.id, nextPrice);
+    setPriceDrafts((current) => ({ ...current, [item.lineId]: String(nextPrice) }));
+    if (moveToNextRow) skuInputRef.current?.focus();
+  };
+
+  const fillCustomer = (customer: Customer) => {
+    setSelectedRestaurant(null);
+    setSelectedCustomer(customer);
+    setOriginalCustomer(customer);
+    setName(customer.name);
+    setPhone(customer.phone);
+    setAddress(customer.address);
+    setCustomerQuery(customer.name);
+    setCustomerKind('existing');
+    setCustomerStep('review');
+  };
+
+  const startNewCustomer = () => {
+    setSelectedCustomer(null);
+    setSelectedRestaurant(null);
+    setOriginalCustomer(null);
+    setOriginalRestaurant(null);
+    setCustomerKind('new');
+    setName('');
+    setPhone('');
+    setAddress('');
+    setCustomerStep('new');
+  };
+
+  const startExistingCustomer = () => {
+    setCustomerQuery('');
+    setVisibleCustomerCount(10);
+    setCustomerKind('existing');
+    setCustomerStep('existing');
+  };
+
+  const fillRestaurant = (restaurant: Restaurant) => {
+    setSelectedCustomer(null);
+    setSelectedRestaurant(restaurant);
+    setOriginalCustomer(null);
+    setOriginalRestaurant(restaurant);
+    setName(restaurant.name);
+    setContact(restaurant.contact);
+    setPhone(restaurant.phone);
+    setEmail(restaurant.email);
+    setAddress(restaurant.address);
+    setArea(restaurant.area);
+    setGstin(restaurant.gstin);
+    setDeliverySlot(restaurant.deliverySlot);
+    setCreditLimit(String(restaurant.creditLimit));
+    setRestaurantQuery(restaurant.name);
+    setCustomerKind('existing-restaurant');
+    setCustomerStep('restaurant-review');
+  };
+
+  const startNewRestaurant = () => {
+    setSelectedCustomer(null);
+    setSelectedRestaurant(null);
+    setOriginalCustomer(null);
+    setOriginalRestaurant(null);
+    setCustomerKind('new-restaurant');
+    setName('');
+    setContact('');
+    setPhone('');
+    setEmail('');
+    setAddress('');
+    setArea('');
+    setGstin('');
+    setDeliverySlot('4–6 PM');
+    setCreditLimit('50000');
+    setCustomerStep('restaurant-new');
+  };
+
+  const startExistingRestaurant = () => {
+    setRestaurantQuery('');
+    setCustomerKind('existing-restaurant');
+    setCustomerStep('restaurant-existing');
+  };
+
+  const continueWithNewRestaurant = () => {
+    if (!restaurantDetailsValid) return;
+    setCustomerStep('ready');
+  };
+
+  const continueWithNewCustomer = () => {
+    if (!customerDetailsValid) return;
+    setSelectedCustomer(null);
+    setCustomerStep('ready');
+  };
+
+  const saveCustomerChanges = () => {
+    if (!originalCustomer || !customerDetailsValid) return;
+    const details = { name: name.trim(), phone: phone.trim(), address: address.trim() };
+    const updatedCustomer = { ...originalCustomer, ...details };
+    updateCustomer(originalCustomer.id, details);
+    setSelectedCustomer(updatedCustomer);
+    setOriginalCustomer(updatedCustomer);
+    setCustomerQuery(updatedCustomer.name);
+    setCustomerStep('ready');
+  };
+
+  const saveRestaurantChanges = () => {
+    if (!originalRestaurant || !restaurantDetailsValid) return;
+    const details = { name: name.trim(), contact: contact.trim(), phone: phone.trim(), email: email.trim(), address: address.trim(), area: area.trim(), gstin: gstin.trim(), deliverySlot, creditLimit: Number(creditLimit) || 0 };
+    const updatedRestaurant = { ...originalRestaurant, ...details };
+    updateRestaurant(originalRestaurant.id, details);
+    setSelectedRestaurant(updatedRestaurant);
+    setOriginalRestaurant(updatedRestaurant);
+    setRestaurantQuery(updatedRestaurant.name);
+    setCustomerStep('ready');
+  };
+
+  const changeCustomer = () => {
+    setSelectedCustomer(null);
+    setSelectedRestaurant(null);
+    setOriginalCustomer(null);
+    setOriginalRestaurant(null);
+    setCustomerKind(null);
+    setCustomerQuery('');
+    setName('');
+    setPhone('');
+    setAddress('');
+    setContact('');
+    setEmail('');
+    setArea('');
+    setGstin('');
+    setCustomerStep('choose');
+  };
+
+  return (
+    <div className="page billing-page">
+      <PageTitle eyebrow="Point of sale" title="Create a new bill" description={customerReady ? 'Add items, choose payment and complete the bill.' : 'Select a customer or restaurant before adding items.'} actions={<><span className="bill-number">Next · INV-2049</span><button className="shortcut-button">⌘ K &nbsp; Quick search</button></>} />
+
+      <div className="billing-progress" aria-label="Billing progress">
+        <div className="active"><span>{customerReady ? '✓' : '1'}</span><div><b>Bill recipient</b><small>{customerReady ? 'Details confirmed' : 'Customer or restaurant'}</small></div></div>
+        <i />
+        <div className={customerReady ? 'active' : ''}><span>2</span><div><b>Items &amp; payment</b><small>Build and complete bill</small></div></div>
+      </div>
+
+      {!customerReady && (
+        <section className="customer-onboarding">
+          {customerStep === 'choose' && (
+            <>
+              <div className="customer-step-head"><span className="step-icon">◎</span><div><p>Step 1 of 2</p><h2>Who is this bill for?</h2><small>Choose a customer or a restaurant account.</small></div></div>
+              <p className="choice-group-label">Customers</p>
+              <div className="customer-choice-grid">
+                <button className="customer-choice" onClick={startNewCustomer}><span className="choice-icon">＋</span><span><b>New customer</b><small>Enter name, phone number and address first.</small></span><i>→</i></button>
+                <button className="customer-choice" onClick={startExistingCustomer}><span className="choice-icon existing">⌕</span><span><b>Existing customer</b><small>Search, review and edit a saved customer.</small></span><i>→</i></button>
+              </div>
+              <p className="choice-group-label restaurant-label">Restaurants</p>
+              <div className="customer-choice-grid">
+                <button className="customer-choice restaurant-choice" onClick={startNewRestaurant}><span className="choice-icon restaurant">＋</span><span><b>Add restaurant</b><small>Create an account with delivery and credit details.</small></span><i>→</i></button>
+                <button className="customer-choice restaurant-choice" onClick={startExistingRestaurant}><span className="choice-icon restaurant">⌕</span><span><b>Existing restaurant</b><small>Find a restaurant and use its saved details.</small></span><i>→</i></button>
+              </div>
+            </>
+          )}
+
+          {customerStep === 'new' && (
+            <>
+              <div className="customer-step-head"><button className="step-back" onClick={() => setCustomerStep('choose')} aria-label="Back to customer type">←</button><div><p>New customer</p><h2>Add customer details</h2><small>These details will be saved when the bill is created.</small></div></div>
+              <div className="customer-form-grid">
+                <label><span>Customer name</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Enter full name" /></label>
+                <label><span>Phone number</span><input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+91 98765 43210" /></label>
+                <label className="full-field"><span>Address (optional)</span><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Street, area and city" /></label>
+              </div>
+              <div className="customer-step-actions"><button className="secondary-action" onClick={() => setCustomerStep('choose')}>Back</button><button className="continue-action" disabled={!customerDetailsValid} onClick={continueWithNewCustomer}>Continue to add items <span>→</span></button></div>
+            </>
+          )}
+
+          {customerStep === 'existing' && (
+            <>
+              <div className="customer-step-head"><button className="step-back" onClick={() => setCustomerStep('choose')} aria-label="Back to customer type">←</button><div><p>Existing customer</p><h2>Find a customer</h2><small>Search by customer name, phone number or address.</small></div></div>
+              <label className="existing-customer-search"><span>⌕</span><input autoFocus value={customerQuery} onChange={(event) => { setCustomerQuery(event.target.value); setVisibleCustomerCount(10); }} placeholder="Search by name, phone number or address…" /></label>
+              <div
+                className="customer-search-results"
+                role="listbox"
+                aria-label="Customer list"
+                onScroll={(event) => {
+                  const list = event.currentTarget;
+                  if (hasMoreCustomers && list.scrollHeight - list.scrollTop - list.clientHeight < 32) {
+                    setVisibleCustomerCount((current) => Math.min(current + 10, filteredCustomers.length));
+                  }
+                }}
+              >
+                {suggestedCustomers.map((customer) => (
+                  <button key={customer.id} className="customer-suggestion" role="option" aria-selected="false" onClick={() => fillCustomer(customer)}>
+                    <span className="suggestion-avatar">{initials(customer.name)}</span>
+                    <span className="suggestion-profile"><b>{customer.name}</b><small>{customer.phone}</small><em>{customer.address}</em></span>
+                    <span className="suggestion-meta"><small>{customer.visits} visits</small><b>{money(customer.totalSpent)}</b></span>
+                    <i>→</i>
+                  </button>
+                ))}
+                {!suggestedCustomers.length && <div className="customer-search-empty"><span>∅</span><b>No matching customer</b><small>Try another name or phone number.</small></div>}
+                {suggestedCustomers.length > 0 && (
+                  <div className="customer-list-footer" aria-live="polite">
+                    <span>Showing {suggestedCustomers.length} of {filteredCustomers.length} customers</span>
+                    <b>{hasMoreCustomers ? 'Scroll for 10 more ↓' : 'All customers loaded ✓'}</b>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {customerStep === 'restaurant-new' && (
+            <>
+              <div className="customer-step-head"><button className="step-back" onClick={() => setCustomerStep('choose')} aria-label="Back to recipient type">←</button><div><p>New restaurant</p><h2>Add restaurant details</h2><small>The account will be saved when this bill is created.</small></div></div>
+              <div className="customer-form-grid restaurant-form-grid">
+                <label><span>Restaurant name *</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="e.g. Annapoorna Bhavan" /></label>
+                <label><span>Contact person *</span><input value={contact} onChange={(event) => setContact(event.target.value)} placeholder="Manager or storekeeper" /></label>
+                <label><span>Phone number *</span><input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+91 98765 43210" /></label>
+                <label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="orders@restaurant.in" /></label>
+                <label className="full-field"><span>Delivery address *</span><input value={address} onChange={(event) => setAddress(event.target.value)} placeholder="Street, area and city" /></label>
+                <label><span>Area</span><input value={area} onChange={(event) => setArea(event.target.value)} placeholder="Anna Nagar" /></label>
+                <label><span>GSTIN</span><input value={gstin} onChange={(event) => setGstin(event.target.value.toUpperCase())} placeholder="33ABCDE1234F1Z5" /></label>
+                <label><span>Preferred delivery slot</span><select value={deliverySlot} onChange={(event) => setDeliverySlot(event.target.value)}><option>6–8 AM</option><option>8–10 AM</option><option>10 AM–12 PM</option><option>12–2 PM</option><option>2–4 PM</option><option>4–6 PM</option></select></label>
+                <label><span>Credit limit</span><input type="number" min="0" value={creditLimit} onChange={(event) => setCreditLimit(event.target.value)} /></label>
+              </div>
+              <div className="customer-step-actions"><button className="secondary-action" onClick={() => setCustomerStep('choose')}>Back</button><button className="continue-action" disabled={!restaurantDetailsValid} onClick={continueWithNewRestaurant}>Continue to add items <span>→</span></button></div>
+            </>
+          )}
+
+          {customerStep === 'restaurant-existing' && (
+            <>
+              <div className="customer-step-head"><button className="step-back" onClick={() => setCustomerStep('choose')} aria-label="Back to recipient type">←</button><div><p>Existing restaurant</p><h2>Find a restaurant</h2><small>Search by restaurant, contact person, phone number or area.</small></div></div>
+              <label className="existing-customer-search"><span>⌕</span><input autoFocus value={restaurantQuery} onChange={(event) => setRestaurantQuery(event.target.value)} placeholder="Search restaurant accounts…" /></label>
+              <div className="restaurant-search-results" role="listbox" aria-label="Restaurant list">
+                {filteredRestaurants.map((restaurant) => (
+                  <button key={restaurant.id} className="customer-suggestion restaurant-suggestion" role="option" aria-selected="false" onClick={() => fillRestaurant(restaurant)}>
+                    <span className="suggestion-avatar restaurant-avatar">{initials(restaurant.name)}</span>
+                    <span className="suggestion-profile"><b>{restaurant.name}</b><small>{restaurant.contact} · {restaurant.phone}</small><em>{restaurant.address}</em></span>
+                    <span className="suggestion-meta"><small>{restaurant.totalOrders} orders</small><b>{money(restaurant.totalSpent)}</b></span>
+                    <StatusPill value={restaurant.status} />
+                    <i>→</i>
+                  </button>
+                ))}
+                {!filteredRestaurants.length && <div className="customer-search-empty"><span>∅</span><b>No matching restaurant</b><small>Try another restaurant name, contact or area.</small></div>}
+              </div>
+            </>
+          )}
+
+          {customerStep === 'restaurant-review' && originalRestaurant && (
+            <>
+              <div className="customer-step-head"><button className="step-back" onClick={startExistingRestaurant} aria-label="Back to restaurant search">←</button><div><p>Review restaurant</p><h2>Confirm restaurant details</h2><small>Check the delivery and account information before billing.</small></div></div>
+              <div className="customer-review-overview restaurant-review-overview">
+                <span className="review-avatar restaurant-avatar">{initials(originalRestaurant.name)}</span>
+                <div><b>{originalRestaurant.name}</b><small>{originalRestaurant.contact} · {originalRestaurant.area}</small></div>
+                <div className="profile-quick-stats"><span><small>Orders</small><b>{originalRestaurant.totalOrders}</b></span><span><small>Outstanding</small><b>{money(originalRestaurant.outstanding)}</b></span><span><small>Next delivery</small><b>{originalRestaurant.nextDelivery}</b></span></div>
+              </div>
+              <div className="customer-form-grid restaurant-form-grid">
+                <label><span>Restaurant name *</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+                <label><span>Contact person *</span><input value={contact} onChange={(event) => setContact(event.target.value)} /></label>
+                <label><span>Phone number *</span><input value={phone} onChange={(event) => setPhone(event.target.value)} /></label>
+                <label><span>Email</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+                <label className="full-field"><span>Delivery address *</span><input value={address} onChange={(event) => setAddress(event.target.value)} /></label>
+                <label><span>Area</span><input value={area} onChange={(event) => setArea(event.target.value)} /></label>
+                <label><span>GSTIN</span><input value={gstin} onChange={(event) => setGstin(event.target.value.toUpperCase())} /></label>
+                <label><span>Preferred delivery slot</span><select value={deliverySlot} onChange={(event) => setDeliverySlot(event.target.value)}><option>6–8 AM</option><option>8–10 AM</option><option>10 AM–12 PM</option><option>12–2 PM</option><option>2–4 PM</option><option>4–6 PM</option></select></label>
+                <label><span>Credit limit</span><input type="number" min="0" value={creditLimit} onChange={(event) => setCreditLimit(event.target.value)} /></label>
+              </div>
+              <div className="customer-step-actions single-action"><button className="continue-action" disabled={!restaurantDetailsValid} onClick={saveRestaurantChanges}>Save and continue <span>→</span></button></div>
+            </>
+          )}
+
+          {customerStep === 'review' && originalCustomer && (
+            <>
+              <div className="customer-step-head"><button className="step-back" onClick={startExistingCustomer} aria-label="Back to customer search">←</button><div><p>Review customer</p><h2>Confirm customer details</h2><small>Edit any information that has changed, or continue as-is.</small></div></div>
+              <div className="customer-review-overview">
+                <span className="review-avatar">{initials(originalCustomer.name)}</span>
+                <div><b>{originalCustomer.name}</b><small>Customer since {originalCustomer.lastVisit === 'Just now' ? 'today' : 'before this visit'}</small></div>
+                <div className="profile-quick-stats"><span><small>Visits</small><b>{originalCustomer.visits}</b></span><span><small>Total spent</small><b>{money(originalCustomer.totalSpent)}</b></span><span><small>Top item</small><b>{originalCustomer.topItem}</b></span></div>
+              </div>
+              <div className="customer-form-grid">
+                <label><span>Customer name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+                <label><span>Phone number</span><input value={phone} onChange={(event) => setPhone(event.target.value)} /></label>
+                <label className="full-field"><span>Address (optional)</span><input value={address} onChange={(event) => setAddress(event.target.value)} /></label>
+              </div>
+              <div className="customer-step-actions single-action"><button className="continue-action" disabled={!customerDetailsValid} onClick={saveCustomerChanges}>Save and continue <span>→</span></button></div>
+            </>
+          )}
+        </section>
+      )}
+
+      {customerReady && (
+        <>
+          <section className="selected-customer-banner">
+            <span className="review-avatar">{initials(name)}</span>
+            <div className="selected-customer-copy"><small>{isRestaurant ? (customerKind === 'new-restaurant' ? 'New restaurant' : 'Restaurant account confirmed') : (customerKind === 'new' ? 'New customer' : 'Existing customer confirmed')}</small><b>{name}</b><span>{isRestaurant && contact ? `${contact} · ` : ''}{phone}{address ? ` · ${address}` : ' · No address added'}</span></div>
+            <div className="selected-customer-actions"><button onClick={() => setCustomerStep(customerKind === 'existing' ? 'review' : customerKind === 'new' ? 'new' : customerKind === 'existing-restaurant' ? 'restaurant-review' : 'restaurant-new')}>Edit details</button><button onClick={changeCustomer}>Change recipient</button></div>
+          </section>
+
+          <div className="billing-layout table-billing-layout">
+            <section className="line-items-panel">
+              <header className="line-items-heading">
+                <div><p>Bill items</p><h2>Enter items by SKU or name</h2><span>Choose a suggestion, enter the weight and price, then press Enter for the next row.</span></div>
+                <span className="keyboard-hint"><kbd>↵</kbd> Next row</span>
+              </header>
+
+              <div className="line-items-table-wrap">
+                <table className="line-items-table">
+                  <colgroup><col className="row-col" /><col className="sku-col" /><col className="item-col" /><col className="weight-col" /><col className="price-col" /><col className="amount-col" /><col className="action-col" /></colgroup>
+                  <thead><tr><th>#</th><th>SKU</th><th>Item name</th><th>Weight (kg)</th><th>Unit price</th><th>Price</th><th><span className="sr-only">Actions</span></th></tr></thead>
+                  <tbody>
+                    {cart.map((item, index) => {
+                      const draftWeight = quantityDrafts[item.id] ?? String(item.quantity);
+                      const draftNumber = Number(draftWeight);
+                      const exceedsStock = Number.isFinite(draftNumber) && draftNumber > item.stock;
+                      const draftPrice = priceDrafts[item.id] ?? String(item.price);
+                      const parsedPrice = Number(draftPrice);
+                      const invalidPrice = draftPrice.trim() === '' || !Number.isFinite(parsedPrice) || parsedPrice <= 0;
+                      return (
+                        <tr className="completed-line" key={item.id}>
+                          <td><span className="table-row-number">{index + 1}</span></td>
+                          <td><span className="line-sku">{item.sku}</span></td>
+                          <td><div className="line-item-name"><span className="line-item-mark" style={{ '--product-color': item.color } as CSSProperties}>{item.short}</span><span><strong>{item.name}</strong><small>{item.category} · {item.stock} kg available</small></span></div></td>
+                          <td>
+                            <label className={`weight-input ${exceedsStock ? 'invalid' : ''}`}>
+                              <input
+                                id={`quantity-${item.id}`}
+                                aria-label={`Weight in kilograms for ${item.name}`}
+                                type="number"
+                                inputMode="decimal"
+                                min="0.01"
+                                max={item.stock}
+                                step="0.25"
+                                value={draftWeight}
+                                onChange={(event) => updateWeight(item, event.target.value)}
+                                onBlur={() => commitWeight(item)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    commitWeight(item, true);
+                                  }
+                                }}
+                              />
+                              <span>kg</span>
+                            </label>
+                            {exceedsStock && <small className="stock-error">Max {item.stock} kg</small>}
+                          </td>
+                          <td>
+                            <label className={`unit-price-input ${invalidPrice ? 'invalid' : ''}`}>
+                              <span aria-hidden="true">₹</span>
+                              <input
+                                id={`price-${item.id}`}
+                                aria-label={`Unit price for ${item.name}`}
+                                type="number"
+                                inputMode="decimal"
+                                min="0.01"
+                                step="0.01"
+                                value={draftPrice}
+                                onChange={(event) => updatePrice(item, event.target.value)}
+                                onBlur={() => commitPrice(item)}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                    commitPrice(item, true);
+                                  }
+                                }}
+                              />
+                            </label>
+                            <small className={invalidPrice ? 'price-error' : 'price-save-note'}>{invalidPrice ? 'Enter a valid price' : 'Saved for next bill'}</small>
+                          </td>
+                          <td><strong className="line-amount">{money(item.price * item.quantity)}</strong></td>
+                          <td><button className="remove-line" aria-label={`Remove ${item.name}`} onClick={() => { removeFromCart(item.id); setQuantityDrafts((current) => { const next = { ...current }; delete next[item.id]; return next; }); setPriceDrafts((current) => { const next = { ...current }; delete next[item.id]; return next; }); }}>×</button></td>
+                        </tr>
+                      );
+                    })}
+
+                    <tr className="entry-line">
+                      <td><span className="table-row-number active">{cart.length + 1}</span></td>
+                      <td className="sku-entry-cell">
+                        <div className="sku-entry-wrap">
+                          <span className="sku-search-icon">⌕</span>
+                          <input
+                            ref={skuInputRef}
+                            role="combobox"
+                            aria-label="Enter SKU or item name"
+                            aria-autocomplete="list"
+                            aria-expanded={suggestionsOpen}
+                            aria-controls="product-suggestions"
+                            aria-activedescendant={suggestionsOpen && productSuggestions[activeSuggestion] ? `product-suggestion-${productSuggestions[activeSuggestion].id}` : undefined}
+                            autoComplete="off"
+                            value={itemQuery}
+                            placeholder="SKU or item"
+                            onFocus={() => setSuggestionsOpen(true)}
+                            onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
+                            onChange={(event) => { setItemQuery(event.target.value); setActiveSuggestion(0); setSuggestionsOpen(true); }}
+                            onKeyDown={handleSkuKeyDown}
+                          />
+                          {suggestionsOpen && (
+                            <div className="product-suggestions" id="product-suggestions" role="listbox">
+                              {productSuggestions.map((product, index) => (
+                                <button
+                                  type="button"
+                                  role="option"
+                                  aria-selected={index === activeSuggestion}
+                                  className={index === activeSuggestion ? 'active' : ''}
+                                  disabled={product.stock === 0}
+                                  key={product.id}
+                                  id={`product-suggestion-${product.id}`}
+                                  onMouseDown={(event) => event.preventDefault()}
+                                  onClick={() => selectProduct(product)}
+                                >
+                                  <span className="suggestion-mark" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span>
+                                  <span className="suggestion-main"><b>{product.sku}</b><small>{product.name}</small></span>
+                                  <span className="suggestion-stock"><b>{money(product.price)} / kg</b><small className={product.stock ? 'positive' : 'negative'}>{cart.some((item) => item.id === product.id) ? 'In bill · Enter adds 1 kg' : product.stock ? `${product.stock} kg available` : 'Out of stock'}</small></span>
+                                </button>
+                              ))}
+                              {!productSuggestions.length && <div className="no-product-match"><b>No matching item</b><small>Check the SKU or try a different item name.</small></div>}
+                              <div className="suggestion-help"><span>↑ ↓ Navigate</span><span>↵ Select</span><span>Esc Close</span></div>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td><span className="empty-cell-copy">Item name appears after selection</span></td>
+                      <td><span className="disabled-cell">0.00 kg</span></td>
+                      <td><span className="disabled-cell">₹0 / kg</span></td>
+                      <td><strong className="disabled-cell">₹0</strong></td>
+                      <td />
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <footer className="line-items-footer"><span className={productSelectionMessage ? 'line-item-feedback' : ''} role="status" aria-live="polite">{productSelectionMessage || 'Tip: You can type either the SKU code or the item name.'}</span><button onClick={() => skuInputRef.current?.focus()}>＋ Add another row</button></footer>
+            </section>
+
+            <aside className="cart-panel checkout-panel">
+              <div className="cart-heading"><div><p>Current order</p><h2>{cart.length} {cart.length === 1 ? 'item' : 'items'}</h2></div><button disabled={!cart.length} onClick={() => { clearCart(); setQuantityDrafts({}); setPriceDrafts({}); }}>Clear</button></div>
+              <div className="order-overview"><div><span>Items</span><strong>{cart.length}</strong></div><div><span>Total weight</span><strong>{totalWeight.toLocaleString('en-IN', { maximumFractionDigits: 2 })} kg</strong></div></div>
+              <div className="cart-bottom">
+                <label className="delivery-toggle"><span><b>{isRestaurant ? 'Restaurant delivery' : 'Home delivery'}</b><small>Create a delivery job after billing</small></span><input type="checkbox" checked={delivery} onChange={(event) => setDelivery(event.target.checked)} /><i /></label>
+                <div className="payment-methods"><span>Payment method</span><div>{['Cash', 'UPI', 'Card', 'Credit'].map((method) => <button key={method} className={payment === method ? 'selected' : ''} onClick={() => setPayment(method)}>{method}</button>)}</div></div>
+                <div className="totals"><p><span>Subtotal</span><b>{money(subtotal)}</b></p><p><span>GST (5%)</span><b>{money(tax)}</b></p><p className="grand-total"><span>Total</span><b>{money(subtotal + tax)}</b></p></div>
+                <button className="primary-action" disabled={!cart.length || cart.some((item) => item.quantity <= 0) || hasInvalidPrice || !partyDetailsValid || (delivery && !address.trim())} onClick={() => completeBill({ name, phone, address, payment, delivery, restaurant: isRestaurant ? { id: originalRestaurant?.id, contact: contact.trim(), email: email.trim(), area: area.trim(), gstin: gstin.trim(), deliverySlot, creditLimit: Number(creditLimit) || 0 } : undefined })}>Create bill <span>{money(subtotal + tax)}</span></button>
+                {delivery && !address.trim() && <small className="field-hint">Add a delivery address before creating the bill.</small>}
+              </div>
+            </aside>
+          </div>
+        </>
+      )}
+      </div>
+  );
+}
+
+function InventoryPage({ products }: { products: Product[] }) {
+  const [search, setSearch] = useState('');
+  const [shop, setShop] = useState('All shops');
+  const [status, setStatus] = useState('All stock');
+  const visible = products.filter((product) =>
+    `${product.name} ${product.sku}`.toLowerCase().includes(search.toLowerCase()) &&
+    (shop === 'All shops' || product.shop === shop) &&
+    (status === 'All stock' || stockStatus(product) === status),
+  );
+  const low = products.filter((product) => stockStatus(product) === 'Low stock').length;
+  const out = products.filter((product) => stockStatus(product) === 'Out of stock').length;
+  const units = products.reduce((sum, product) => sum + product.stock, 0);
+
+  return (
+    <div className="page">
+      <PageTitle eyebrow="Stock control" title="Inventory" description="Live stock position across both shops." actions={<button className="secondary-action">↥ Export report</button>} />
+      <div className="metric-grid">
+        <MetricCard label="Total products" value={String(products.length)} note="Across 6 categories" tone="green" icon="□" />
+        <MetricCard label="Units on hand" value={String(units)} note="Available to sell" tone="blue" icon="▥" />
+        <MetricCard label="Low stock" value={String(low)} note="Needs attention" tone="amber" icon="!" />
+        <MetricCard label="Out of stock" value={String(out)} note="Reorder now" tone="red" icon="×" />
+      </div>
+      <section className="data-card">
+        <div className="data-toolbar">
+          <label className="search-field compact"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search product or SKU" /></label>
+          <div className="filters"><select value={shop} onChange={(event) => setShop(event.target.value)}><option>All shops</option><option>Anna Nagar</option><option>Ayyanambakkam</option></select><select value={status} onChange={(event) => setStatus(event.target.value)}><option>All stock</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div>
+        </div>
+        <div className="table-wrap">
+          <table><thead><tr><th>Product</th><th>SKU</th><th>Shop</th><th>Stock level</th><th>On hand</th><th>Value</th><th>Status</th></tr></thead>
+            <tbody>{visible.map((product) => { const productStatus = stockStatus(product); const percentage = Math.min(100, (product.stock / Math.max(product.reorder * 3, 1)) * 100); return (
+              <tr key={product.id}><td><div className="product-cell"><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><div><strong>{product.name}</strong><small>{product.category} · {product.unit}</small></div></div></td><td><span className="mono">{product.sku}</span></td><td>{product.shop}</td><td><div className="stock-bar"><i style={{ width: `${percentage}%` }} className={productStatus === 'In stock' ? '' : productStatus === 'Low stock' ? 'low' : 'out'} /></div></td><td><strong>{product.stock}</strong> <small>{product.unit}</small></td><td>{money(product.stock * product.price)}</td><td><StatusPill value={productStatus} /></td></tr>
+            ); })}</tbody>
+          </table>
+        </div>
+        <div className="table-footer"><span>Showing {visible.length} of {products.length} products</span><span>Updated just now</span></div>
+      </section>
+    </div>
+  );
+}
+
+function DeliveriesPage({ deliveries, setDeliveries, restaurants, setRestaurants, onNewBill }: { deliveries: Delivery[]; setDeliveries: React.Dispatch<React.SetStateAction<Delivery[]>>; restaurants: Restaurant[]; setRestaurants: React.Dispatch<React.SetStateAction<Restaurant[]>>; onNewBill: (restaurant: Restaurant) => void }) {
+  const [section, setSection] = useState<'orders' | 'restaurants'>('orders');
+  const [status, setStatus] = useState('All');
+  const [search, setSearch] = useState('');
+  const [date, setDate] = useState('Today');
+  const visible = deliveries.filter((delivery) =>
+    (status === 'All' || delivery.status === status) &&
+    `${delivery.customer} ${delivery.id} ${delivery.phone}`.toLowerCase().includes(search.toLowerCase()),
+  );
+  const changeStatus = (id: string, next: DeliveryStatus) => setDeliveries((current) => current.map((delivery) => delivery.id === id ? { ...delivery, status: next, updated: 'Just now' } : delivery));
+
+  return (
+    <div className="page">
+      <div className="subpage-tabs" role="tablist" aria-label="Delivery sections">
+        <button role="tab" aria-selected={section === 'orders'} className={section === 'orders' ? 'selected' : ''} onClick={() => setSection('orders')}><span>⌁</span> Delivery orders <b>{deliveries.length}</b></button>
+        <button role="tab" aria-selected={section === 'restaurants'} className={section === 'restaurants' ? 'selected' : ''} onClick={() => setSection('restaurants')}><span>♨</span> Restaurants <b>{restaurants.length}</b></button>
+      </div>
+      {section === 'restaurants' ? (
+        <RestaurantsPage restaurants={restaurants} setRestaurants={setRestaurants} deliveries={deliveries} onNewBill={onNewBill} />
+      ) : (
+      <>
+        <PageTitle eyebrow="Order fulfillment" title="Delivery orders" description="Track pending, active and completed deliveries." actions={<button className="primary-small">＋ Add delivery</button>} />
+        <div className="metric-grid delivery-metrics">
+        <MetricCard label="Pending" value={String(deliveries.filter((item) => item.status === 'Pending').length)} note="Awaiting assignment" tone="amber" icon="◷" />
+        <MetricCard label="On the way" value={String(deliveries.filter((item) => item.status === 'Out for delivery').length)} note="With delivery partner" tone="blue" icon="⌁" />
+        <MetricCard label="Delivered" value={String(deliveries.filter((item) => item.status === 'Delivered').length)} note="96% on-time rate" tone="green" icon="✓" />
+        <MetricCard label="Needs attention" value={String(deliveries.filter((item) => item.status === 'Failed').length)} note="Failed attempt" tone="red" icon="!" />
+        </div>
+        <section className="data-card">
+        <div className="filter-header">
+          <div className="segmented">{['Today', 'This week', 'This month'].map((item) => <button className={date === item ? 'selected' : ''} key={item} onClick={() => setDate(item)}>{item}</button>)}</div>
+          <label className="search-field compact"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search delivery" /></label>
+        </div>
+        <div className="status-tabs">{['All', 'Pending', 'Out for delivery', 'Delivered', 'Failed'].map((item) => <button key={item} className={status === item ? 'selected' : ''} onClick={() => setStatus(item)}>{item}<span>{item === 'All' ? deliveries.length : deliveries.filter((delivery) => delivery.status === item).length}</span></button>)}</div>
+        <div className="delivery-list">
+          {visible.map((delivery) => (
+            <article className="delivery-row" key={delivery.id}>
+              <div className="delivery-id"><span className={`delivery-icon ${delivery.status.toLowerCase().replaceAll(' ', '-')}`}>{delivery.status === 'Delivered' ? '✓' : delivery.status === 'Failed' ? '!' : '⌁'}</span><div><strong>{delivery.id}</strong><small>{delivery.billId}</small></div></div>
+              <div className="delivery-customer"><strong>{delivery.customer}</strong><small>{delivery.phone}</small></div>
+              <div className="delivery-address"><strong>{delivery.address}</strong><small>{delivery.slot}</small></div>
+              <div><StatusPill value={delivery.status} /><small className="updated">Updated {delivery.updated}</small></div>
+              <div className="driver"><span className="avatar small">{delivery.driver === 'Unassigned' ? '—' : initials(delivery.driver)}</span><div><small>Driver</small><strong>{delivery.driver}</strong></div></div>
+              <select aria-label={`Update ${delivery.id} status`} value={delivery.status} onChange={(event) => changeStatus(delivery.id, event.target.value as DeliveryStatus)}><option>Pending</option><option>Out for delivery</option><option>Delivered</option><option>Failed</option></select>
+            </article>
+          ))}
+        </div>
+        <div className="table-footer"><span>{visible.length} deliveries · {date}</span><span>Last synced just now</span></div>
+        </section>
+      </>
+      )}
+    </div>
+  );
+}
+
+function RestaurantsPage({ restaurants, setRestaurants, deliveries, onNewBill }: { restaurants: Restaurant[]; setRestaurants: React.Dispatch<React.SetStateAction<Restaurant[]>>; deliveries: Delivery[]; onNewBill: (restaurant: Restaurant) => void }) {
+  const [search, setSearch] = useState('');
+  const [detail, setDetail] = useState<Restaurant | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState({ name: '', contact: '', phone: '', email: '', address: '', area: '', gstin: '', deliverySlot: '4–6 PM', creditLimit: '50000' });
+  const visible = restaurants.filter((restaurant) => `${restaurant.name} ${restaurant.contact} ${restaurant.phone} ${restaurant.area}`.toLowerCase().includes(search.toLowerCase()));
+  const totalOutstanding = restaurants.reduce((sum, restaurant) => sum + restaurant.outstanding, 0);
+  const updateDraft = (key: keyof typeof draft, value: string) => setDraft((current) => ({ ...current, [key]: value }));
+
+  const saveRestaurant = () => {
+    if (!draft.name.trim() || !draft.contact.trim() || !draft.phone.trim() || !draft.address.trim()) return;
+    const restaurant: Restaurant = {
+      id: Date.now(), name: draft.name.trim(), contact: draft.contact.trim(), phone: draft.phone.trim(), email: draft.email.trim(), address: draft.address.trim(), area: draft.area.trim(), gstin: draft.gstin.trim().toUpperCase(), deliverySlot: draft.deliverySlot, creditLimit: Number(draft.creditLimit) || 0,
+      outstanding: 0, totalOrders: 0, totalSpent: 0, lastOrder: 'No orders yet', nextDelivery: 'Not scheduled', status: 'Active', notes: 'New restaurant account — add delivery notes after the first order.',
+    };
+    setRestaurants((current) => [restaurant, ...current]);
+    setDraft({ name: '', contact: '', phone: '', email: '', address: '', area: '', gstin: '', deliverySlot: '4–6 PM', creditLimit: '50000' });
+    setAdding(false);
+    setDetail(restaurant);
+  };
+
+  if (detail) {
+    const restaurantDeliveries = deliveries.filter((delivery) => delivery.customer === detail.name);
+    const creditAvailable = Math.max(0, detail.creditLimit - detail.outstanding);
+    const setAccountStatus = (status: RestaurantStatus) => {
+      const updated = { ...detail, status };
+      setRestaurants((current) => current.map((restaurant) => restaurant.id === detail.id ? updated : restaurant));
+      setDetail(updated);
+    };
+    return (
+      <>
+        <button className="back-button" onClick={() => setDetail(null)}>‹ Back to restaurants</button>
+        <div className="restaurant-profile-head">
+          <span className="profile-avatar restaurant-profile-avatar">{initials(detail.name)}</span>
+          <div><p>Restaurant account</p><h1>{detail.name}</h1><span>{detail.contact} · {detail.phone} · {detail.area}</span></div>
+          <StatusPill value={detail.status} />
+          <button className="primary-small" onClick={() => onNewBill(detail)}>＋ Create bill</button>
+        </div>
+        <div className="profile-metrics restaurant-profile-metrics"><div><span>Lifetime sales</span><strong>{money(detail.totalSpent)}</strong></div><div><span>Total orders</span><strong>{detail.totalOrders}</strong></div><div><span>Outstanding</span><strong className={detail.outstanding ? 'negative' : 'positive'}>{money(detail.outstanding)}</strong></div><div><span>Credit available</span><strong>{money(creditAvailable)}</strong></div></div>
+        <div className="restaurant-detail-grid">
+          <section className="data-card padded restaurant-account-card">
+            <div className="section-title"><div><p>Account details</p><h2>Restaurant information</h2></div><select aria-label="Account status" value={detail.status} onChange={(event) => setAccountStatus(event.target.value as RestaurantStatus)}><option>Active</option><option>On hold</option></select></div>
+            <dl className="detail-list"><div><dt>Contact person</dt><dd>{detail.contact}</dd></div><div><dt>Phone</dt><dd>{detail.phone}</dd></div><div><dt>Email</dt><dd>{detail.email || 'Not added'}</dd></div><div><dt>GSTIN</dt><dd className="mono">{detail.gstin || 'Not added'}</dd></div><div className="wide"><dt>Delivery address</dt><dd>{detail.address}</dd></div><div><dt>Credit limit</dt><dd>{money(detail.creditLimit)}</dd></div></dl>
+          </section>
+          <section className="data-card padded restaurant-delivery-card">
+            <div className="section-title"><div><p>Delivery tracking</p><h2>Schedule &amp; instructions</h2></div><span>{restaurantDeliveries.length} linked jobs</span></div>
+            <div className="delivery-schedule"><span className="schedule-icon">⌁</span><div><small>Next delivery</small><strong>{detail.nextDelivery}</strong><p>Preferred daily slot · {detail.deliverySlot}</p></div></div>
+            <div className="instruction-note"><span>i</span><p><b>Delivery instructions</b>{detail.notes}</p></div>
+            <div className="linked-deliveries">{restaurantDeliveries.length ? restaurantDeliveries.map((delivery) => <button key={delivery.id}><span><b>{delivery.id}</b><small>{delivery.slot} · {delivery.driver}</small></span><StatusPill value={delivery.status} /></button>) : <div className="empty-linked-deliveries"><b>No delivery jobs yet</b><small>Create a bill with restaurant delivery enabled.</small></div>}</div>
+          </section>
+        </div>
+      </>
+    );
+  }
+
+  if (adding) {
+    return (
+      <>
+        <button className="back-button" onClick={() => setAdding(false)}>‹ Back to restaurants</button>
+        <PageTitle eyebrow="Restaurant accounts" title="Add restaurant" description="Create a billing, credit and delivery profile." />
+        <section className="data-card padded add-restaurant-card">
+          <div className="customer-form-grid restaurant-form-grid">
+            <label><span>Restaurant name *</span><input autoFocus value={draft.name} onChange={(event) => updateDraft('name', event.target.value)} /></label><label><span>Contact person *</span><input value={draft.contact} onChange={(event) => updateDraft('contact', event.target.value)} /></label>
+            <label><span>Phone number *</span><input value={draft.phone} onChange={(event) => updateDraft('phone', event.target.value)} /></label><label><span>Email</span><input type="email" value={draft.email} onChange={(event) => updateDraft('email', event.target.value)} /></label>
+            <label className="full-field"><span>Delivery address *</span><input value={draft.address} onChange={(event) => updateDraft('address', event.target.value)} /></label><label><span>Area</span><input value={draft.area} onChange={(event) => updateDraft('area', event.target.value)} /></label>
+            <label><span>GSTIN</span><input value={draft.gstin} onChange={(event) => updateDraft('gstin', event.target.value.toUpperCase())} /></label><label><span>Delivery slot</span><select value={draft.deliverySlot} onChange={(event) => updateDraft('deliverySlot', event.target.value)}><option>6–8 AM</option><option>8–10 AM</option><option>10 AM–12 PM</option><option>12–2 PM</option><option>2–4 PM</option><option>4–6 PM</option></select></label>
+            <label><span>Credit limit</span><input type="number" min="0" value={draft.creditLimit} onChange={(event) => updateDraft('creditLimit', event.target.value)} /></label>
+          </div>
+          <div className="customer-step-actions"><button className="secondary-action" onClick={() => setAdding(false)}>Cancel</button><button className="continue-action" disabled={!draft.name.trim() || !draft.contact.trim() || !draft.phone.trim() || !draft.address.trim()} onClick={saveRestaurant}>Save restaurant <span>→</span></button></div>
+        </section>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <PageTitle eyebrow="Delivery network" title="Restaurants" description="Track restaurant details, credit and upcoming deliveries." actions={<button className="primary-small" onClick={() => setAdding(true)}>＋ Add restaurant</button>} />
+      <div className="metric-grid restaurant-metrics"><MetricCard label="Active restaurants" value={String(restaurants.filter((restaurant) => restaurant.status === 'Active').length)} note="Ready for orders" tone="green" icon="♨" /><MetricCard label="Upcoming deliveries" value={String(restaurants.filter((restaurant) => restaurant.nextDelivery !== 'On hold' && restaurant.nextDelivery !== 'Not scheduled').length)} note="Scheduled accounts" tone="blue" icon="⌁" /><MetricCard label="Outstanding credit" value={money(totalOutstanding)} note="Across all accounts" tone="amber" icon="₹" /><MetricCard label="On hold" value={String(restaurants.filter((restaurant) => restaurant.status === 'On hold').length)} note="Needs attention" tone="red" icon="!" /></div>
+      <section className="data-card">
+        <div className="data-toolbar"><label className="search-field compact wide"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search restaurant, contact, phone or area" /></label><div className="restaurant-view-note"><span>●</span> Live account details</div></div>
+        <div className="table-wrap"><table><thead><tr><th>Restaurant</th><th>Contact</th><th>Delivery</th><th>Orders</th><th>Lifetime sales</th><th>Outstanding</th><th>Status</th><th /></tr></thead><tbody>{visible.map((restaurant) => <tr key={restaurant.id} className="clickable-row" onClick={() => setDetail(restaurant)}><td><div className="customer-name"><span className="avatar restaurant-avatar">{initials(restaurant.name)}</span><div><strong>{restaurant.name}</strong><small className="address-line">{restaurant.area} · {restaurant.gstin || 'No GSTIN'}</small></div></div></td><td><strong>{restaurant.contact}</strong><small className="address-line">{restaurant.phone}</small></td><td><strong>{restaurant.nextDelivery}</strong><small className="address-line">Preferred · {restaurant.deliverySlot}</small></td><td>{restaurant.totalOrders}</td><td><strong>{money(restaurant.totalSpent)}</strong></td><td><strong className={restaurant.outstanding ? 'negative' : 'positive'}>{money(restaurant.outstanding)}</strong></td><td><StatusPill value={restaurant.status} /></td><td><button aria-label={`Open ${restaurant.name}`}>›</button></td></tr>)}</tbody></table></div>
+        <div className="table-footer"><span>Showing {visible.length} of {restaurants.length} restaurants</span><span>Open a restaurant to track full details</span></div>
+      </section>
+    </>
+  );
+}
+
+function CustomersPage({ customers, bills, detail, setDetail, onNewBill }: { customers: Customer[]; bills: Bill[]; detail: Customer | null; setDetail: (customer: Customer | null) => void; onNewBill: (customer: Customer) => void }) {
+  const [search, setSearch] = useState('');
+  const visible = customers.filter((customer) => `${customer.name} ${customer.phone}`.toLowerCase().includes(search.toLowerCase()));
+
+  if (detail) {
+    const customerBills = bills.filter((bill) => bill.phone === detail.phone);
+    const purchaseCounts = new Map<string, number>();
+    customerBills.forEach((bill) => bill.items.forEach((item) => purchaseCounts.set(item.name, (purchaseCounts.get(item.name) ?? 0) + item.quantity)));
+    const topItems = [...purchaseCounts.entries()].sort((a, b) => b[1] - a[1]);
+    return (
+      <div className="page">
+        <button className="back-button" onClick={() => setDetail(null)}>‹ Back to customers</button>
+        <div className="customer-profile-head">
+          <span className="profile-avatar">{initials(detail.name)}</span>
+          <div><p>Customer profile</p><h1>{detail.name}</h1><span>{detail.phone} · {detail.address}</span></div>
+          <button className="primary-small" onClick={() => onNewBill(detail)}>＋ Create bill</button>
+        </div>
+        <div className="profile-metrics"><div><span>Lifetime spend</span><strong>{money(detail.totalSpent)}</strong></div><div><span>Total visits</span><strong>{detail.visits}</strong></div><div><span>Average bill</span><strong>{money(Math.round(detail.totalSpent / detail.visits))}</strong></div><div><span>Last purchase</span><strong>{detail.lastVisit}</strong></div></div>
+        <div className="customer-detail-grid">
+          <section className="data-card padded"><div className="section-title"><div><p>Purchase patterns</p><h2>Most purchased items</h2></div><span>By quantity</span></div>
+            <div className="top-items">{(topItems.length ? topItems : [[detail.topItem, 8], ['Crystal Salt', 4], ['Gingelly Oil', 3]] as Array<[string, number]>).slice(0, 4).map(([item, count], index) => <div key={item}><span className="rank">{index + 1}</span><div><strong>{item}</strong><small>{count} units purchased</small></div><div className="rank-bar"><i style={{ width: `${Math.max(20, 100 - index * 23)}%` }} /></div></div>)}</div>
+          </section>
+          <section className="data-card padded"><div className="section-title"><div><p>Recent activity</p><h2>Purchased bills</h2></div><span>{customerBills.length || 3} bills</span></div>
+            <div className="mini-bill-list">{(customerBills.length ? customerBills : initialBills.slice(0, 3)).slice(0, 4).map((bill) => <div key={bill.id}><span className="bill-file">▤</span><div><strong>{bill.id}</strong><small>{bill.date} · {bill.items.length} items</small></div><strong>{money(bill.amount)}</strong><StatusPill value={bill.status} /></div>)}</div>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <PageTitle eyebrow="Customer records" title="Customers" description="Contact details and complete purchase history." actions={<button className="primary-small">＋ Add customer</button>} />
+      <div className="metric-grid customer-metrics">
+        <MetricCard label="Total customers" value={String(customers.length)} note="4 added this month" tone="green" icon="◎" />
+        <MetricCard label="Returning customers" value="68%" note="Up 4.2% this month" tone="blue" icon="↻" />
+        <MetricCard label="Average spend" value="₹1,284" note="Per customer" tone="amber" icon="₹" />
+      </div>
+      <section className="data-card">
+        <div className="data-toolbar"><label className="search-field compact wide"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name or phone number" /></label><div className="filters"><select><option>All customers</option><option>Recent customers</option><option>High value</option></select></div></div>
+        <div className="table-wrap"><table><thead><tr><th>Customer</th><th>Contact</th><th>Last purchase</th><th>Visits</th><th>Top item</th><th>Total spent</th><th /></tr></thead><tbody>
+          {visible.map((customer) => <tr key={customer.id} className="clickable-row" onClick={() => setDetail(customer)}><td><div className="customer-name"><span className="avatar">{initials(customer.name)}</span><strong>{customer.name}</strong></div></td><td><strong>{customer.phone}</strong><small className="address-line">{customer.address}</small></td><td>{customer.lastVisit}</td><td>{customer.visits}</td><td>{customer.topItem}</td><td><strong>{money(customer.totalSpent)}</strong></td><td><button aria-label={`Open ${customer.name}`}>›</button></td></tr>)}
+        </tbody></table></div>
+        <div className="table-footer"><span>Showing {visible.length} of {customers.length} customers</span><span>Customer data is captured during billing</span></div>
+      </section>
+    </div>
+  );
+}
+
+function BillsPage({ bills, setSelectedBill }: { bills: Bill[]; setSelectedBill: (bill: Bill) => void }) {
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('All statuses');
+  const [payment, setPayment] = useState('All payments');
+  const [date, setDate] = useState('This week');
+  const visible = bills.filter((bill) =>
+    `${bill.id} ${bill.customer} ${bill.phone}`.toLowerCase().includes(search.toLowerCase()) &&
+    (status === 'All statuses' || bill.status === status) &&
+    (payment === 'All payments' || bill.payment === payment),
+  );
+  const total = bills.filter((bill) => bill.status === 'Paid').reduce((sum, bill) => sum + bill.amount, 0);
+
+  return (
+    <div className="page">
+      <PageTitle eyebrow="Sales records" title="All bills" description="Find, review and track every bill created." actions={<button className="secondary-action">↥ Export bills</button>} />
+      <div className="bill-summary"><div><p>Collected sales</p><strong>{money(total)}</strong><span>↗ 12.8% from last week</span></div><div className="summary-divider" /><div><p>Bills created</p><strong>{bills.length}</strong><span>{bills.filter((bill) => bill.status === 'Paid').length} paid</span></div><div className="summary-divider" /><div><p>Average bill value</p><strong>{money(Math.round(bills.reduce((sum, bill) => sum + bill.amount, 0) / bills.length))}</strong><span>Across both shops</span></div><div className="sales-bars" aria-label="Weekly sales trend">{[35, 58, 44, 76, 62, 90, 72].map((height, index) => <i key={index} style={{ height: `${height}%` }} />)}</div></div>
+      <section className="data-card">
+        <div className="data-toolbar bill-filters"><label className="search-field compact"><span>⌕</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Bill number, customer or phone" /></label><div className="filters"><select value={date} onChange={(event) => setDate(event.target.value)}><option>Today</option><option>This week</option><option>This month</option></select><select value={payment} onChange={(event) => setPayment(event.target.value)}><option>All payments</option><option>Cash</option><option>UPI</option><option>Card</option><option>Credit</option></select><select value={status} onChange={(event) => setStatus(event.target.value)}><option>All statuses</option><option>Paid</option><option>Pending</option><option>Refunded</option></select></div></div>
+        <div className="table-wrap"><table><thead><tr><th>Bill number</th><th>Customer</th><th>Date & time</th><th>Shop</th><th>Items</th><th>Payment</th><th>Amount</th><th>Status</th><th /></tr></thead><tbody>
+          {visible.map((bill) => <tr key={bill.id} className="clickable-row" onClick={() => setSelectedBill(bill)}><td><strong className="bill-id">{bill.id}</strong></td><td><strong>{bill.customer}</strong><small className="address-line">{bill.phone}</small></td><td>{bill.date}<small className="address-line">{bill.time}</small></td><td>{bill.shop}</td><td>{bill.items.reduce((sum, item) => sum + item.quantity, 0)}</td><td>{bill.payment}</td><td><strong>{money(bill.amount)}</strong></td><td><StatusPill value={bill.status} /></td><td><button aria-label={`Open ${bill.id}`}>›</button></td></tr>)}
+        </tbody></table></div>
+        <div className="table-footer"><span>{visible.length} bills · {date}</span><span>Total shown: {money(visible.reduce((sum, bill) => sum + bill.amount, 0))}</span></div>
+      </section>
+    </div>
+  );
+}
+
+function MetricCard({ label, value, note, tone, icon }: { label: string; value: string; note: string; tone: string; icon: string }) {
+  return <article className="metric-card"><span className={`metric-icon ${tone}`}>{icon}</span><div><p>{label}</p><strong>{value}</strong><small>{note}</small></div></article>;
+}
+
+function StatusPill({ value }: { value: string }) {
+  const key = value.toLowerCase().replaceAll(' ', '-');
+  return <span className={`status-pill ${key}`}><i />{value}</span>;
+}
+
+function BillDrawer({ bill, onClose }: { bill: Bill; onClose: () => void }) {
+  const subtotal = Math.round(bill.amount / 1.05);
+  return (
+    <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`Bill ${bill.id}`}>
+      <button className="drawer-backdrop" aria-label="Close bill" onClick={onClose} />
+      <aside className="bill-drawer">
+        <div className="drawer-head"><div><p>Bill details</p><h2>{bill.id}</h2></div><button onClick={onClose} aria-label="Close">×</button></div>
+        <div className="receipt-brand"><span className="brand-mark">SVT</span><div><strong>Sri Vijay Traders</strong><small>{bill.shop} · Chennai</small></div></div>
+        <div className="receipt-info"><div><span>Billed to</span><strong>{bill.customer}</strong><small>{bill.phone}</small></div><div><span>Issued</span><strong>{bill.date}</strong><small>{bill.time}</small></div></div>
+        <div className="receipt-lines"><div className="receipt-row header"><span>Item</span><span>Qty</span><span>Amount</span></div>{bill.items.map((item) => <div className="receipt-row" key={item.name}><span><strong>{item.name}</strong><small>{money(item.price)} each</small></span><span>{item.quantity}</span><strong>{money(item.price * item.quantity)}</strong></div>)}</div>
+        <div className="receipt-totals"><p><span>Subtotal</span><b>{money(subtotal)}</b></p><p><span>GST (5%)</span><b>{money(bill.amount - subtotal)}</b></p><p><span>Total</span><b>{money(bill.amount)}</b></p></div>
+        <div className="receipt-payment"><div><span>Payment</span><strong>{bill.payment}</strong></div><StatusPill value={bill.status} /></div>
+        <div className="drawer-actions"><button>Print bill</button><button>Share receipt</button></div>
+      </aside>
+    </div>
+  );
+}
