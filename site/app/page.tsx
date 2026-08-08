@@ -922,26 +922,29 @@ function BillingPage({
                   <thead><tr><th>#</th><th>SKU</th><th>Item name</th><th>Weight (kg)</th><th>Unit price</th><th>Price</th><th><span className="sr-only">Actions</span></th></tr></thead>
                   <tbody>
                     {cart.map((item, index) => {
-                      const draftWeight = quantityDrafts[item.id] ?? String(item.quantity);
+                      const allocatedToOtherLines = cart.reduce((sum, line) =>
+                        line.id === item.id && line.lineId !== item.lineId ? sum + line.quantity : sum, 0);
+                      const availableForLine = Math.max(0, item.stock - allocatedToOtherLines);
+                      const draftWeight = quantityDrafts[item.lineId] ?? String(item.quantity);
                       const draftNumber = Number(draftWeight);
-                      const exceedsStock = Number.isFinite(draftNumber) && draftNumber > item.stock;
-                      const draftPrice = priceDrafts[item.id] ?? String(item.price);
+                      const exceedsStock = Number.isFinite(draftNumber) && draftNumber > availableForLine;
+                      const draftPrice = priceDrafts[item.lineId] ?? String(item.price);
                       const parsedPrice = Number(draftPrice);
                       const invalidPrice = draftPrice.trim() === '' || !Number.isFinite(parsedPrice) || parsedPrice <= 0;
                       return (
-                        <tr className="completed-line" key={item.id}>
+                        <tr className="completed-line" key={item.lineId}>
                           <td><span className="table-row-number">{index + 1}</span></td>
                           <td><span className="line-sku">{item.sku}</span></td>
                           <td><div className="line-item-name"><span className="line-item-mark" style={{ '--product-color': item.color } as CSSProperties}>{item.short}</span><span><strong>{item.name}</strong><small>{item.category} · {item.stock} kg available</small></span></div></td>
                           <td>
                             <label className={`weight-input ${exceedsStock ? 'invalid' : ''}`}>
                               <input
-                                id={`quantity-${item.id}`}
-                                aria-label={`Weight in kilograms for ${item.name}`}
+                                id={`quantity-${item.lineId}`}
+                                aria-label={`Weight in kilograms for ${item.name}, row ${index + 1}`}
                                 type="number"
                                 inputMode="decimal"
                                 min="0.01"
-                                max={item.stock}
+                                max={availableForLine}
                                 step="0.25"
                                 value={draftWeight}
                                 onChange={(event) => updateWeight(item, event.target.value)}
@@ -955,14 +958,14 @@ function BillingPage({
                               />
                               <span>kg</span>
                             </label>
-                            {exceedsStock && <small className="stock-error">Max {item.stock} kg</small>}
+                            {exceedsStock && <small className="stock-error">Max {availableForLine} kg across these rows</small>}
                           </td>
                           <td>
                             <label className={`unit-price-input ${invalidPrice ? 'invalid' : ''}`}>
                               <span aria-hidden="true">₹</span>
                               <input
-                                id={`price-${item.id}`}
-                                aria-label={`Unit price for ${item.name}`}
+                                id={`price-${item.lineId}`}
+                                aria-label={`Unit price for ${item.name}, row ${index + 1}`}
                                 type="number"
                                 inputMode="decimal"
                                 min="0.01"
@@ -981,7 +984,7 @@ function BillingPage({
                             <small className={invalidPrice ? 'price-error' : 'price-save-note'}>{invalidPrice ? 'Enter a valid price' : 'Saved for next bill'}</small>
                           </td>
                           <td><strong className="line-amount">{money(item.price * item.quantity)}</strong></td>
-                          <td><button className="remove-line" aria-label={`Remove ${item.name}`} onClick={() => { removeFromCart(item.id); setQuantityDrafts((current) => { const next = { ...current }; delete next[item.id]; return next; }); setPriceDrafts((current) => { const next = { ...current }; delete next[item.id]; return next; }); }}>×</button></td>
+                          <td><button className="remove-line" aria-label={`Remove ${item.name} from row ${index + 1}`} onClick={() => { removeFromCart(item.lineId); setQuantityDrafts((current) => { const next = { ...current }; delete next[item.lineId]; return next; }); setPriceDrafts((current) => { const next = { ...current }; delete next[item.lineId]; return next; }); }}>×</button></td>
                         </tr>
                       );
                     })}
@@ -1015,7 +1018,7 @@ function BillingPage({
                                   role="option"
                                   aria-selected={index === activeSuggestion}
                                   className={index === activeSuggestion ? 'active' : ''}
-                                  disabled={product.stock === 0}
+                                  disabled={remainingStockForProduct(product) === 0}
                                   key={product.id}
                                   id={`product-suggestion-${product.id}`}
                                   onMouseDown={(event) => event.preventDefault()}
@@ -1023,7 +1026,7 @@ function BillingPage({
                                 >
                                   <span className="suggestion-mark" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span>
                                   <span className="suggestion-main"><b>{product.sku}</b><small>{product.name}</small></span>
-                                  <span className="suggestion-stock"><b>{money(product.price)} / kg</b><small className={product.stock ? 'positive' : 'negative'}>{cart.some((item) => item.id === product.id) ? 'In bill · Enter adds 1 kg' : product.stock ? `${product.stock} kg available` : 'Out of stock'}</small></span>
+                                  <span className="suggestion-stock"><b>{money(product.price)} / kg</b><small className={remainingStockForProduct(product) ? 'positive' : 'negative'}>{remainingStockForProduct(product) ? `${remainingStockForProduct(product)} kg available` : 'No stock remaining'}</small></span>
                                 </button>
                               ))}
                               {!productSuggestions.length && <div className="no-product-match"><b>No matching item</b><small>Check the SKU or try a different item name.</small></div>}
