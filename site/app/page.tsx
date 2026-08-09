@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
-import { evaluateGuardrails, parseBillingCommand, parseExternalOrder, stepQuantity, type ExternalOrderLine } from './billing-engine';
+import { allocateInventorySale, evaluateGuardrails, parseBillingCommand, parseExternalOrder, stepQuantity, type ExternalOrderLine } from './billing-engine';
 import { persistCompletedBill, type CompleteBillingInput } from './billing-api';
 
 type Page = 'billing' | 'inventory' | 'deliveries' | 'customers' | 'bills';
@@ -18,6 +18,9 @@ type Product = {
   unit: string;
   price: number;
   stock: number;
+  bagStock: number;
+  retailStockKg: number;
+  bagWeightKg: number;
   reorder: number;
   color: string;
   shop: string;
@@ -29,7 +32,7 @@ type Product = {
   otherShopStock?: number;
 };
 
-type CartLine = Product & { lineId: number; quantity: number; enteredExpression?: string; fulfillmentShop?: string };
+type CartLine = Product & { lineId: number; quantity: number; enteredExpression?: string; fulfillmentShop?: string; saleMode?: 'RETAIL' | 'BAG' };
 
 type Customer = {
   id: number;
@@ -129,14 +132,14 @@ type Restaurant = {
 type RestaurantBillingDetails = Pick<Restaurant, 'contact' | 'email' | 'area' | 'gstin' | 'deliverySlot' | 'creditLimit'> & { id?: number };
 
 const initialProducts: Product[] = [
-  { id: 1, name: 'Ponni Boiled Rice', short: 'PR', sku: 'RIC-PON-01', barcode: '890100000001', aliases: ['ponni rice', 'boiled rice', 'பொன்னி அரிசி', 'ponni arisi'], category: 'Grains', unit: 'kg', unitKind: 'WEIGHED', price: 72, cost: 61, stock: 84, otherShopStock: 46, reorder: 20, color: '#e7c772', shop: 'Anna Nagar' },
-  { id: 2, name: 'Toor Dal Premium', short: 'TD', sku: 'DAL-TOO-02', barcode: '890100000002', aliases: ['toor dal', 'thuvaram paruppu', 'துவரம் பருப்பு'], category: 'Pulses', unit: 'kg', unitKind: 'WEIGHED', price: 168, cost: 145, stock: 12, otherShopStock: 35, reorder: 15, color: '#e9a94f', shop: 'Anna Nagar' },
-  { id: 3, name: 'Gingelly Oil', short: 'GO', sku: 'OIL-GIN-01', barcode: '890100000003', aliases: ['sesame oil', 'nallennai', 'நல்லெண்ணெய்'], category: 'Oils', unit: '1 L', unitKind: 'COUNTED', packSizeKg: 1, price: 349, cost: 306, stock: 31, otherShopStock: 18, reorder: 10, color: '#d08c3d', shop: 'Ayyanambakkam' },
-  { id: 4, name: 'Aashirvaad Atta', short: 'AA', sku: 'FLO-AAT-05', barcode: '890100000004', aliases: ['atta', 'wheat flour', 'கோதுமை மாவு'], category: 'Flour', unit: '5 kg', unitKind: 'COUNTED', packSizeKg: 5, price: 292, cost: 258, stock: 9, otherShopStock: 22, reorder: 12, color: '#c97a57', shop: 'Anna Nagar' },
-  { id: 5, name: 'Crystal Salt', short: 'CS', sku: 'SPI-SAL-01', barcode: '890100000005', aliases: ['salt', 'uppu', 'உப்பு'], category: 'Spices', unit: '1 kg', unitKind: 'COUNTED', packSizeKg: 1, price: 28, cost: 20, stock: 120, otherShopStock: 75, reorder: 30, color: '#91aaba', shop: 'Ayyanambakkam' },
-  { id: 6, name: 'Jaggery Cubes', short: 'JC', sku: 'SUG-JAG-01', barcode: '890100000006', aliases: ['jaggery', 'vellam', 'வெல்லம்'], category: 'Sweeteners', unit: 'kg', unitKind: 'WEIGHED', price: 86, cost: 72, stock: 0, otherShopStock: 18, reorder: 10, color: '#9e6d43', shop: 'Anna Nagar' },
-  { id: 7, name: 'Idli Rice', short: 'IR', sku: 'RIC-IDL-05', barcode: '890100000007', aliases: ['idly rice', 'இட்லி அரிசி'], category: 'Grains', unit: '5 kg', unitKind: 'COUNTED', packSizeKg: 5, price: 365, cost: 318, stock: 46, otherShopStock: 28, reorder: 12, color: '#d8c9a2', shop: 'Ayyanambakkam' },
-  { id: 8, name: 'Urad Dal Whole', short: 'UD', sku: 'DAL-URA-01', barcode: '890100000008', aliases: ['urad dal', 'ulundhu', 'உளுந்து'], category: 'Pulses', unit: 'kg', unitKind: 'WEIGHED', price: 192, cost: 164, stock: 23, otherShopStock: 14, reorder: 15, color: '#7c7069', shop: 'Anna Nagar' },
+  { id: 1, name: 'Ponni Boiled Rice', short: 'PR', sku: 'RIC-PON-01', barcode: '890100000001', aliases: ['ponni rice', 'boiled rice', 'பொன்னி அரிசி', 'ponni arisi'], category: 'Grains', unit: 'kg', unitKind: 'WEIGHED', price: 72, cost: 61, stock: 84, bagStock: 3, retailStockKg: 6, bagWeightKg: 26, otherShopStock: 46, reorder: 20, color: '#e7c772', shop: 'Anna Nagar' },
+  { id: 2, name: 'Toor Dal Premium', short: 'TD', sku: 'DAL-TOO-02', barcode: '890100000002', aliases: ['toor dal', 'thuvaram paruppu', 'துவரம் பருப்பு'], category: 'Pulses', unit: 'kg', unitKind: 'WEIGHED', price: 168, cost: 145, stock: 12, bagStock: 0, retailStockKg: 12, bagWeightKg: 26, otherShopStock: 35, reorder: 15, color: '#e9a94f', shop: 'Anna Nagar' },
+  { id: 3, name: 'Gingelly Oil', short: 'GO', sku: 'OIL-GIN-01', barcode: '890100000003', aliases: ['sesame oil', 'nallennai', 'நல்லெண்ணெய்'], category: 'Oils', unit: '1 L', unitKind: 'COUNTED', packSizeKg: 1, price: 349, cost: 306, stock: 31, bagStock: 31, retailStockKg: 0, bagWeightKg: 1, otherShopStock: 18, reorder: 10, color: '#d08c3d', shop: 'Ayyanambakkam' },
+  { id: 4, name: 'Aashirvaad Atta', short: 'AA', sku: 'FLO-AAT-05', barcode: '890100000004', aliases: ['atta', 'wheat flour', 'கோதுமை மாவு'], category: 'Flour', unit: '5 kg', unitKind: 'COUNTED', packSizeKg: 5, price: 292, cost: 258, stock: 9, bagStock: 9, retailStockKg: 0, bagWeightKg: 5, otherShopStock: 22, reorder: 12, color: '#c97a57', shop: 'Anna Nagar' },
+  { id: 5, name: 'Crystal Salt', short: 'CS', sku: 'SPI-SAL-01', barcode: '890100000005', aliases: ['salt', 'uppu', 'உப்பு'], category: 'Spices', unit: '1 kg', unitKind: 'COUNTED', packSizeKg: 1, price: 28, cost: 20, stock: 120, bagStock: 120, retailStockKg: 0, bagWeightKg: 1, otherShopStock: 75, reorder: 30, color: '#91aaba', shop: 'Ayyanambakkam' },
+  { id: 6, name: 'Jaggery Cubes', short: 'JC', sku: 'SUG-JAG-01', barcode: '890100000006', aliases: ['jaggery', 'vellam', 'வெல்லம்'], category: 'Sweeteners', unit: 'kg', unitKind: 'WEIGHED', price: 86, cost: 72, stock: 0, bagStock: 0, retailStockKg: 0, bagWeightKg: 26, otherShopStock: 18, reorder: 10, color: '#9e6d43', shop: 'Anna Nagar' },
+  { id: 7, name: 'Idli Rice', short: 'IR', sku: 'RIC-IDL-05', barcode: '890100000007', aliases: ['idly rice', 'இட்லி அரிசி'], category: 'Grains', unit: '5 kg', unitKind: 'COUNTED', packSizeKg: 5, price: 365, cost: 318, stock: 46, bagStock: 46, retailStockKg: 0, bagWeightKg: 5, otherShopStock: 28, reorder: 12, color: '#d8c9a2', shop: 'Ayyanambakkam' },
+  { id: 8, name: 'Urad Dal Whole', short: 'UD', sku: 'DAL-URA-01', barcode: '890100000008', aliases: ['urad dal', 'ulundhu', 'உளுந்து'], category: 'Pulses', unit: 'kg', unitKind: 'WEIGHED', price: 192, cost: 164, stock: 23, bagStock: 0, retailStockKg: 23, bagWeightKg: 26, otherShopStock: 14, reorder: 15, color: '#7c7069', shop: 'Anna Nagar' },
 ];
 
 const initialCustomers: Customer[] = [
@@ -284,7 +287,7 @@ export default function Home() {
     setMenuOpen(false);
   };
 
-  const addToCart = (product: Product, initialQuantity: number, metadata?: Pick<CartLine, 'enteredExpression' | 'fulfillmentShop'>) => {
+  const addToCart = (product: Product, initialQuantity: number, metadata?: Pick<CartLine, 'enteredExpression' | 'fulfillmentShop' | 'saleMode'>) => {
     const sellableStock = metadata?.fulfillmentShop && metadata.fulfillmentShop !== product.shop ? product.otherShopStock ?? 0 : product.stock;
     if (sellableStock === 0 || initialQuantity <= 0) return null;
     const lineId = nextCartLineId.current++;
@@ -358,12 +361,13 @@ export default function Home() {
         window.setTimeout(() => setToast(''), 3500);
       });
     } else queueBillForSync({ billId: bill.id, payload: syncPayload });
-    setProducts((current) =>
-      current.map((product) => {
-        const soldQuantity = cart.reduce((sum, item) => item.id === product.id ? sum + item.quantity : sum, 0);
-        return soldQuantity ? { ...product, stock: Math.max(0, product.stock - soldQuantity) } : product;
-      }),
-    );
+    setProducts((current) => current.map((product) => {
+      const localLines = cart.filter((item) => item.id === product.id && (!item.fulfillmentShop || item.fulfillmentShop === product.shop));
+      return localLines.reduce<Product>((nextProduct, line) => {
+        const allocation = allocateInventorySale(nextProduct, line.quantity, line.saleMode ?? 'RETAIL');
+        return { ...nextProduct, bagStock: allocation.bagStock, retailStockKg: allocation.retailStockKg, stock: allocation.stock };
+      }, product);
+    }));
 
     if (details.restaurant) {
       const existingRestaurant = restaurants.find((restaurant) => restaurant.id === details.restaurant?.id);
@@ -681,7 +685,7 @@ function BillingPage({
   setSelectedRestaurant: (restaurant: Restaurant | null) => void;
   updateCustomer: (id: number, details: Pick<Customer, 'name' | 'phone' | 'address'>) => void;
   updateRestaurant: (id: number, details: Pick<Restaurant, 'name' | 'contact' | 'phone' | 'email' | 'address' | 'area' | 'gstin' | 'deliverySlot' | 'creditLimit'>) => void;
-  addToCart: (product: Product, initialQuantity: number, metadata?: Pick<CartLine, 'enteredExpression' | 'fulfillmentShop'>) => number | null;
+    addToCart: (product: Product, initialQuantity: number, metadata?: Pick<CartLine, 'enteredExpression' | 'fulfillmentShop' | 'saleMode'>) => number | null;
   setCartQuantity: (lineId: number, quantity: number) => void;
   setCartPrice: (lineId: number, productId: number, price: number) => void;
   removeFromCart: (lineId: number) => void;
@@ -724,7 +728,7 @@ function BillingPage({
   const [scaleConnected, setScaleConnected] = useState(true);
   const [scaleStable, setScaleStable] = useState(true);
   const [scaleWeight, setScaleWeight] = useState(2.48);
-  const [stockRescue, setStockRescue] = useState<{ product: Product; quantity: number; expression?: string } | null>(null);
+  const [stockRescue, setStockRescue] = useState<{ product: Product; quantity: number; expression?: string; saleMode?: 'RETAIL' | 'BAG' } | null>(null);
   const [externalOrderOpen, setExternalOrderOpen] = useState(false);
   const [externalOrderText, setExternalOrderText] = useState('10kg ponni rice\n₹500 toor dal\n3 x 5kg atta');
   const [externalLines, setExternalLines] = useState<ExternalOrderLine[]>([]);
@@ -733,6 +737,7 @@ function BillingPage({
   const normalizedItemQuery = itemQuery
     .replace(/(?:₹|rs\.?|inr)\s*\d+(?:\.\d+)?/ig, ' ')
     .replace(/\d+(?:\.\d+)?\s*(?:kg|g|grams?)\b/ig, ' ')
+    .replace(/\d+(?:\.\d+)?\s*bags?\b/ig, ' ')
     .replace(/\d+(?:\.\d+)?\s*[x×]\s*/ig, ' ')
     .trim()
     .toLowerCase();
@@ -803,25 +808,26 @@ function BillingPage({
 
   useEffect(() => setManagerOverride(false), [guardrailKey]);
 
-  const selectProduct = (product: Product, quantity = 1, expression?: string, skipLineEdit = false) => {
+  const selectProduct = (product: Product, quantity = 1, expression?: string, skipLineEdit = false, saleMode: 'RETAIL' | 'BAG' = 'RETAIL') => {
     const remainingStock = remainingStockForProduct(product);
     if (remainingStock < quantity) {
       if ((product.otherShopStock ?? 0) >= quantity) {
-        setStockRescue({ product, quantity, expression });
+        setStockRescue({ product, quantity, expression, saleMode });
         setProductSelectionMessage(`${product.name} is short locally; ${product.otherShopStock} ${product.unit} is available at the other shop.`);
       } else {
         setProductSelectionMessage(`Only ${remainingStock} ${product.unit} of ${product.name} remains locally.`);
       }
       return;
     }
-    const lineId = addToCart(product, Math.min(quantity, remainingStock), { enteredExpression: expression });
+    const lineId = addToCart(product, Math.min(quantity, remainingStock), { enteredExpression: expression, saleMode });
     if (lineId === null) return;
     setItemQuery('');
     setSuggestionsOpen(false);
     setActiveSuggestion(0);
     if (!skipLineEdit) setPendingProductFocus(lineId);
     else window.requestAnimationFrame(() => skuInputRef.current?.focus());
-    setProductSelectionMessage(`${product.name} · ${quantity} ${product.unitKind === 'COUNTED' ? 'pack(s)' : 'kg'} added${expression ? ` from “${expression}”` : ''}.`);
+    const quantityLabel = saleMode === 'BAG' && product.unitKind === 'WEIGHED' ? `${Math.round(quantity / product.bagWeightKg)} bag(s)` : `${quantity} ${product.unitKind === 'COUNTED' ? 'pack(s)' : 'kg'}`;
+    setProductSelectionMessage(`${product.name} · ${quantityLabel} added${expression ? ` from “${expression}”` : ''}.`);
   };
 
   const submitSmartCommand = () => {
@@ -832,7 +838,9 @@ function BillingPage({
     }
     const product = products.find((candidate) => candidate.id === parsed.productId);
     if (!product) return false;
-    selectProduct(product, parsed.quantity, parsed.enteredExpression, parsed.mode !== 'DEFAULT');
+    const bagCount = parsed.quantity / product.bagWeightKg;
+    const saleMode = parsed.mode === 'PACK' && product.unitKind === 'WEIGHED' && Math.abs(bagCount - Math.round(bagCount)) < 0.001 ? 'BAG' : 'RETAIL';
+    selectProduct(product, parsed.quantity, parsed.enteredExpression, parsed.mode !== 'DEFAULT', saleMode);
     return true;
   };
 
@@ -848,7 +856,7 @@ function BillingPage({
       setSuggestionsOpen(false);
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      const hasQuantitySyntax = /(?:₹|rs\.?|inr|\d\s*(?:kg|g|x|×))/i.test(itemQuery);
+      const hasQuantitySyntax = /(?:₹|rs\.?|inr|\d\s*(?:kg|g|bags?|x|×))/i.test(itemQuery);
       if (!hasQuantitySyntax && productSuggestions.length) selectProduct(productSuggestions[activeSuggestion] ?? productSuggestions[0]);
       else submitSmartCommand();
     }
@@ -1312,7 +1320,7 @@ function BillingPage({
           <div className="billing-layout table-billing-layout">
             <section className="line-items-panel">
               <header className="line-items-heading">
-                <div><p>Smart command bar</p><h2>Type the item and quantity together</h2><span>Try “2.5kg ponni”, “₹200 rice”, “3 × 5kg atta”, SKU, barcode, Tamil, or phonetic English.</span></div>
+                <div><p>Smart command bar</p><h2>Type the item and quantity together</h2><span>Try “12kg ponni”, “1 bag ponni”, “₹200 rice”, SKU, barcode, Tamil, or phonetic English.</span></div>
                 <span className="keyboard-hint"><kbd>↵</kbd> Add instantly</span>
               </header>
 
@@ -1335,7 +1343,7 @@ function BillingPage({
                         <tr className="completed-line" key={item.lineId}>
                           <td><span className="table-row-number">{index + 1}</span></td>
                           <td><span className="line-sku">{item.sku}</span></td>
-                          <td><div className="line-item-name"><span className="line-item-mark" style={{ '--product-color': item.color } as CSSProperties}>{item.short}</span><span><strong>{item.name}</strong><small>{item.category} · {item.stock} {item.unitKind === 'COUNTED' ? 'packs' : 'kg'} available{item.fulfillmentShop ? ` · reserved at ${item.fulfillmentShop}` : ''}</small>{item.enteredExpression && <em>“{item.enteredExpression}”</em>}</span></div></td>
+                          <td><div className="line-item-name"><span className="line-item-mark" style={{ '--product-color': item.color } as CSSProperties}>{item.short}</span><span><strong>{item.name}</strong><small>{item.unitKind === 'WEIGHED' ? `${item.bagStock} bags + ${item.retailStockKg} kg retail` : `${item.stock} packs available`}{item.fulfillmentShop ? ` · reserved at ${item.fulfillmentShop}` : ''}</small>{item.enteredExpression && <em>“{item.enteredExpression}” · {item.saleMode === 'BAG' ? 'sealed bag' : 'retail'}</em>}</span></div></td>
                           <td>
                             <label className={`weight-input ${exceedsStock ? 'invalid' : ''}`}>
                               <input
@@ -1431,7 +1439,7 @@ function BillingPage({
                                 >
                                   <span className="suggestion-mark" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span>
                                   <span className="suggestion-main"><b>{product.sku}</b><small>{product.name}</small></span>
-                                  <span className="suggestion-stock"><b>{money(product.price)} / {product.unitKind === 'COUNTED' ? 'pack' : 'kg'}</b><small className={remainingStockForProduct(product) ? 'positive' : product.otherShopStock ? 'warning' : 'negative'}>{remainingStockForProduct(product) ? `${remainingStockForProduct(product)} local` : product.otherShopStock ? `${product.otherShopStock} at other shop` : 'No stock remaining'}</small></span>
+                                  <span className="suggestion-stock"><b>{money(product.price)} / {product.unitKind === 'COUNTED' ? 'pack' : 'kg'}</b><small className={remainingStockForProduct(product) ? 'positive' : product.otherShopStock ? 'warning' : 'negative'}>{remainingStockForProduct(product) ? product.unitKind === 'WEIGHED' ? `${product.bagStock} bags · ${product.retailStockKg} kg retail` : `${remainingStockForProduct(product)} local` : product.otherShopStock ? `${product.otherShopStock} at other shop` : 'No stock remaining'}</small></span>
                                 </button>
                               ))}
                               {!productSuggestions.length && <div className="no-product-match"><b>No matching item</b><small>Check the SKU or try a different item name.</small></div>}
@@ -1450,7 +1458,7 @@ function BillingPage({
                 </table>
               </div>
               <footer className="line-items-footer"><span className={productSelectionMessage ? 'line-item-feedback' : ''} role="status" aria-live="polite">{productSelectionMessage || 'Tip: quantities, rupee amounts, aliases, Tamil names, SKUs, and barcodes all work here.'}</span><button onClick={() => skuInputRef.current?.focus()}>＋ Add another row</button></footer>
-              {stockRescue && <div className="stock-rescue"><span>⇄</span><div><b>Stock rescue available</b><small>{stockRescue.product.name} has {stockRescue.product.otherShopStock} {stockRescue.product.unit} at {stockRescue.product.shop === 'Anna Nagar' ? 'Ayyanambakkam' : 'Anna Nagar'}.</small></div><button onClick={() => { const otherShop = stockRescue.product.shop === 'Anna Nagar' ? 'Ayyanambakkam' : 'Anna Nagar'; const lineId = addToCart(stockRescue.product, stockRescue.quantity, { enteredExpression: stockRescue.expression, fulfillmentShop: otherShop }); if (lineId !== null) { setProductSelectionMessage(`${stockRescue.product.name} reserved at ${otherShop}.`); setStockRescue(null); } }}>Reserve there</button><button className="quiet" onClick={() => setStockRescue(null)}>Dismiss</button></div>}
+              {stockRescue && <div className="stock-rescue"><span>⇄</span><div><b>Stock rescue available</b><small>{stockRescue.product.name} has {stockRescue.product.otherShopStock} {stockRescue.product.unit} at {stockRescue.product.shop === 'Anna Nagar' ? 'Ayyanambakkam' : 'Anna Nagar'}.</small></div><button onClick={() => { const otherShop = stockRescue.product.shop === 'Anna Nagar' ? 'Ayyanambakkam' : 'Anna Nagar'; const lineId = addToCart(stockRescue.product, stockRescue.quantity, { enteredExpression: stockRescue.expression, fulfillmentShop: otherShop, saleMode: stockRescue.saleMode }); if (lineId !== null) { setProductSelectionMessage(`${stockRescue.product.name} reserved at ${otherShop}.`); setStockRescue(null); } }}>Reserve there</button><button className="quiet" onClick={() => setStockRescue(null)}>Dismiss</button></div>}
             </section>
 
             <aside className="cart-panel checkout-panel">
@@ -1524,7 +1532,8 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
   );
   const low = products.filter((product) => stockStatus(product) === 'Low stock').length;
   const out = products.filter((product) => stockStatus(product) === 'Out of stock').length;
-  const units = products.reduce((sum, product) => sum + product.stock, 0);
+  const sealedBags = products.reduce((sum, product) => sum + product.bagStock, 0);
+  const retailKg = products.reduce((sum, product) => sum + product.retailStockKg, 0);
   const selectedProduct = products.find((product) => product.id === selectedProductId) ?? null;
   const matchingProducts = products.filter((product) =>
     `${product.name} ${product.sku}`.toLowerCase().includes(itemSearch.trim().toLowerCase()),
@@ -1536,6 +1545,7 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
   const totalCost = bagCount > 0 && pricePerBag > 0 ? bagCount * pricePerBag : 0;
   const validQuantity = bagCount > 0 && Number.isInteger(bagCount) && weightPerBag > 0 && pricePerBag > 0;
   const newSkuExists = products.some((product) => product.sku.toLowerCase() === sku.trim().toLowerCase());
+  const bagWeightMismatch = Boolean(selectedProduct && weightPerBag > 0 && Math.abs(selectedProduct.bagWeightKg - weightPerBag) > 0.01);
 
   const resetIntake = () => {
     setIntakeMode('choice');
@@ -1555,15 +1565,15 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
   };
 
   const addExistingStock = () => {
-    if (!selectedProduct || !validQuantity) return;
-    const stockAdded = selectedProduct.unitKind === 'WEIGHED' ? totalWeight : bagCount;
+    if (!selectedProduct || !validQuantity || bagWeightMismatch) return;
     setProducts((current) => current.map((product) => product.id === selectedProduct.id ? {
       ...product,
-      stock: Number((product.stock + stockAdded).toFixed(2)),
-      cost: Number((pricePerBag / weightPerBag).toFixed(2)),
+      bagStock: product.bagStock + bagCount,
+      stock: product.unitKind === 'WEIGHED' ? Number(((product.bagStock + bagCount) * product.bagWeightKg + product.retailStockKg).toFixed(2)) : product.stock + bagCount,
+      cost: Number((product.unitKind === 'WEIGHED' ? pricePerBag / weightPerBag : pricePerBag).toFixed(2)),
       packSizeKg: product.unitKind === 'COUNTED' ? weightPerBag : product.packSizeKg,
     } : product));
-    showIntakeSuccess(`${bags} bags of ${selectedProduct.name} added · ${totalWeight.toLocaleString('en-IN')} kg received`);
+    showIntakeSuccess(`${bags} sealed bags of ${selectedProduct.name} added to the Bags column · retail stock unchanged`);
     resetIntake();
   };
 
@@ -1582,12 +1592,15 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
       price: Number(costPerKg.toFixed(2)),
       cost: Number(costPerKg.toFixed(2)),
       stock: Number(totalWeight.toFixed(2)),
+      bagStock: bagCount,
+      retailStockKg: 0,
+      bagWeightKg: weightPerBag,
       reorder: Math.max(10, Math.round(totalWeight * 0.2)),
       color: '#d7bd75',
       shop: intakeShop,
     };
     setProducts((current) => [newProduct, ...current]);
-    showIntakeSuccess(`${normalizedName} created · ${bags} bags and ${totalWeight.toLocaleString('en-IN')} kg added`);
+    showIntakeSuccess(`${normalizedName} created · ${bags} sealed bags added and retail starts at 0 kg`);
     resetIntake();
   };
 
@@ -1617,8 +1630,8 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
                   {intakeMode === 'existing' ? (
                     <div className="existing-item-picker">
                       <label><span>Find item by SKU or name</span><div className="existing-item-search"><b>⌕</b><input value={itemSearch} onChange={(event) => { setItemSearch(event.target.value); setSelectedProductId(null); }} placeholder="Example: RIC-PON-01 or Ponni Rice" autoFocus /></div></label>
-                      {itemSearch && !selectedProduct && <div className="existing-item-results">{matchingProducts.length ? matchingProducts.map((product) => <button key={product.id} onClick={() => { setSelectedProductId(product.id); setItemSearch(`${product.name} · ${product.sku}`); setIntakeShop(product.shop); }}><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><span><strong>{product.name}</strong><small>{product.sku} · {product.shop}</small></span><i>{product.stock} {product.unit}</i></button>) : <div className="picker-empty">No item matches that SKU or name.</div>}</div>}
-                      {selectedProduct && <div className="selected-inventory-item"><span className="mini-product" style={{ '--product-color': selectedProduct.color } as CSSProperties}>{selectedProduct.short}</span><div><small>Selected item</small><strong>{selectedProduct.name}</strong><span>{selectedProduct.sku} · Current stock {selectedProduct.stock} {selectedProduct.unit}</span></div><button onClick={() => { setSelectedProductId(null); setItemSearch(''); }}>Change</button></div>}
+                      {itemSearch && !selectedProduct && <div className="existing-item-results">{matchingProducts.length ? matchingProducts.map((product) => <button key={product.id} onClick={() => { setSelectedProductId(product.id); setItemSearch(`${product.name} · ${product.sku}`); setIntakeShop(product.shop); setBagWeight(String(product.bagWeightKg)); }}><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><span><strong>{product.name}</strong><small>{product.sku} · {product.shop}</small></span><i>{product.bagStock} bags · {product.retailStockKg} kg retail</i></button>) : <div className="picker-empty">No item matches that SKU or name.</div>}</div>}
+                      {selectedProduct && <div className="selected-inventory-item"><span className="mini-product" style={{ '--product-color': selectedProduct.color } as CSSProperties}>{selectedProduct.short}</span><div><small>Selected item</small><strong>{selectedProduct.name}</strong><span>{selectedProduct.sku} · {selectedProduct.bagStock} sealed bags · {selectedProduct.retailStockKg} kg retail</span></div><button onClick={() => { setSelectedProductId(null); setItemSearch(''); setBagWeight(''); }}>Change</button></div>}
                     </div>
                   ) : (
                     <div className="new-item-grid">
@@ -1632,7 +1645,7 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
                     <p>Delivery details</p>
                     <div>
                       <label><span>Number of bags</span><div className="number-field"><input type="number" min="1" step="1" inputMode="numeric" value={bags} onChange={(event) => setBags(event.target.value)} placeholder="0" /><b>bags</b></div></label>
-                      <label><span>Weight of each bag</span><div className="number-field"><input type="number" min="0.01" step="0.01" inputMode="decimal" value={bagWeight} onChange={(event) => setBagWeight(event.target.value)} placeholder="0.00" /><b>kg</b></div></label>
+                      <label><span>Weight of each bag</span><div className="number-field"><input type="number" min="0.01" step="0.01" inputMode="decimal" value={bagWeight} onChange={(event) => setBagWeight(event.target.value)} placeholder="0.00" /><b>kg</b></div>{bagWeightMismatch && <small className="field-error">This item uses {selectedProduct?.bagWeightKg} kg bags. Use the same bag weight.</small>}</label>
                       <label><span>Purchase price per bag</span><div className="number-field price-field"><b>₹</b><input type="number" min="0.01" step="0.01" inputMode="decimal" value={purchasePrice} onChange={(event) => setPurchasePrice(event.target.value)} placeholder="0.00" /></div></label>
                     </div>
                   </div>
@@ -1641,7 +1654,7 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
                   <div className="summary-icon">▥</div><p>Delivery summary</p>
                   <dl><div><dt>Bags received</dt><dd>{bagCount > 0 ? bagCount : '—'}</dd></div><div><dt>Weight per bag</dt><dd>{weightPerBag > 0 ? `${weightPerBag.toLocaleString('en-IN')} kg` : '—'}</dd></div><div className="summary-emphasis"><dt>Total weight</dt><dd>{totalWeight > 0 ? `${totalWeight.toLocaleString('en-IN')} kg` : '—'}</dd></div><div><dt>Price per bag</dt><dd>{pricePerBag > 0 ? money(pricePerBag) : '—'}</dd></div><div className="summary-total"><dt>Total purchase cost</dt><dd>{totalCost > 0 ? money(totalCost) : '—'}</dd></div></dl>
                   <small>Purchase cost is recorded from the price paid for each bag.</small>
-                  <button className="save-intake" disabled={!validQuantity || (intakeMode === 'existing' ? !selectedProduct : !itemName.trim() || !sku.trim() || newSkuExists)} onClick={intakeMode === 'existing' ? addExistingStock : addNewStock}>Add to inventory <span>→</span></button>
+                  <button className="save-intake" disabled={!validQuantity || bagWeightMismatch || (intakeMode === 'existing' ? !selectedProduct : !itemName.trim() || !sku.trim() || newSkuExists)} onClick={intakeMode === 'existing' ? addExistingStock : addNewStock}>Add to inventory <span>→</span></button>
                 </aside>
               </div>
             </section>
@@ -1652,9 +1665,9 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
       <PageTitle eyebrow="Stock control" title="Inventory" description="Live stock position across both shops." actions={<><button className="secondary-action">↥ Export report</button><button className="primary-small" onClick={() => setSection('add')}>＋ Add inventory</button></>} />
       <div className="metric-grid">
         <MetricCard label="Total products" value={String(products.length)} note="Across 6 categories" tone="green" icon="□" />
-        <MetricCard label="Units on hand" value={String(units)} note="Available to sell" tone="blue" icon="▥" />
-        <MetricCard label="Low stock" value={String(low)} note="Needs attention" tone="amber" icon="!" />
-        <MetricCard label="Out of stock" value={String(out)} note="Reorder now" tone="red" icon="×" />
+        <MetricCard label="Sealed bags" value={String(sealedBags)} note="Available for bag sales" tone="blue" icon="▥" />
+        <MetricCard label="Retail display" value={`${retailKg} kg`} note="Open stock for kilo sales" tone="amber" icon="◒" />
+        <MetricCard label="Needs attention" value={String(low + out)} note={`${out} out of stock`} tone="red" icon="!" />
       </div>
       <section className="data-card">
         <div className="data-toolbar">
@@ -1662,9 +1675,9 @@ function InventoryPage({ products, setProducts }: { products: Product[]; setProd
           <div className="filters"><select value={shop} onChange={(event) => setShop(event.target.value)}><option>All shops</option><option>Anna Nagar</option><option>Ayyanambakkam</option></select><select value={status} onChange={(event) => setStatus(event.target.value)}><option>All stock</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div>
         </div>
         <div className="table-wrap">
-          <table><thead><tr><th>Product</th><th>SKU</th><th>Shop</th><th>Stock level</th><th>On hand</th><th>Value</th><th>Status</th></tr></thead>
+          <table className="inventory-table"><thead><tr><th>Product</th><th>SKU</th><th>Shop</th><th>Bags</th><th>Retail</th><th>Bag weight</th><th>Total available</th><th>Value</th><th>Status</th></tr></thead>
             <tbody>{visible.map((product) => { const productStatus = stockStatus(product); const percentage = Math.min(100, (product.stock / Math.max(product.reorder * 3, 1)) * 100); return (
-              <tr key={product.id}><td><div className="product-cell"><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><div><strong>{product.name}</strong><small>{product.category} · {product.unit}</small></div></div></td><td><span className="mono">{product.sku}</span></td><td>{product.shop}</td><td><div className="stock-bar"><i style={{ width: `${percentage}%` }} className={productStatus === 'In stock' ? '' : productStatus === 'Low stock' ? 'low' : 'out'} /></div></td><td><strong>{product.stock}</strong> <small>{product.unit}</small></td><td>{money(product.stock * product.price)}</td><td><StatusPill value={productStatus} /></td></tr>
+              <tr key={product.id}><td><div className="product-cell"><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><div><strong>{product.name}</strong><small>{product.category} · {product.unit}</small></div></div></td><td><span className="mono">{product.sku}</span></td><td>{product.shop}</td><td><div className="split-stock-cell bags-stock"><strong>{product.bagStock}</strong><small>sealed bags</small></div></td><td><div className={`split-stock-cell retail-stock ${product.retailStockKg > 0 ? 'open' : ''}`}><strong>{product.unitKind === 'WEIGHED' ? product.retailStockKg : '—'}</strong><small>{product.unitKind === 'WEIGHED' ? 'kg open' : 'not sold loose'}</small></div></td><td><strong>{product.bagWeightKg} kg</strong><small> / bag</small></td><td><div className="total-stock-cell"><strong>{product.stock} {product.unitKind === 'COUNTED' ? 'packs' : 'kg'}</strong><div className="stock-bar"><i style={{ width: `${percentage}%` }} className={productStatus === 'In stock' ? '' : productStatus === 'Low stock' ? 'low' : 'out'} /></div></div></td><td>{money(product.stock * product.price)}</td><td><StatusPill value={productStatus} /></td></tr>
             ); })}</tbody>
           </table>
         </div>

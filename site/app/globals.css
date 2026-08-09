@@ -369,6 +369,18 @@ td small { color: #8c9895; }
 .stock-bar i { display: block; height: 100%; border-radius: inherit; background: #3ca67f; }
 .stock-bar i.low { background: #e49a32; }
 .stock-bar i.out { background: #d6554c; }
+.inventory-table { min-width: 1120px; }
+.inventory-table th:nth-child(4), .inventory-table th:nth-child(5) { background: #f3f8f6; color: var(--green); }
+.split-stock-cell { min-width: 82px; border-radius: 9px; padding: 8px 10px; background: #f3f6f5; }
+.split-stock-cell strong, .split-stock-cell small { display: block; }
+.split-stock-cell strong { font: 800 15px Manrope, sans-serif; }
+.split-stock-cell small { margin-top: 3px; font-size: 8px; }
+.bags-stock { background: #eef5f2; color: var(--green); }
+.retail-stock { background: #f5f7f6; color: #7a8783; }
+.retail-stock.open { background: #fff3df; color: #a6610d; }
+.retail-stock.open small { color: #b77b36; }
+.total-stock-cell { min-width: 105px; }
+.total-stock-cell > strong { display: block; margin-bottom: 7px; }
 .status-pill { width: fit-content; display: inline-flex; align-items: center; gap: 5px; border-radius: 99px; padding: 5px 8px; background: #edf3f1; color: #3b7063; font-size: 9px; font-weight: 800; white-space: nowrap; }
 .status-pill i { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .status-pill.low-stock, .status-pill.pending { background: var(--amber-soft); color: #b4690e; }

@@ -6,6 +6,9 @@ export type BillableProduct = {
   aliases?: string[];
   unitKind?: 'WEIGHED' | 'COUNTED';
   packSizeKg?: number;
+  bagWeightKg?: number;
+  bagStock?: number;
+  retailStockKg?: number;
   price: number;
   cost?: number;
   stock: number;
@@ -52,6 +55,46 @@ const compact = (value: string) => value
 
 const roundQuantity = (value: number) => Math.round(value * 1000) / 1000;
 
+export function allocateInventorySale(
+  product: Pick<BillableProduct, 'stock' | 'unitKind' | 'packSizeKg' | 'bagWeightKg' | 'bagStock' | 'retailStockKg'>,
+  quantity: number,
+  saleMode: 'RETAIL' | 'BAG' = 'RETAIL',
+) {
+  const soldQuantity = roundQuantity(Math.max(0, Math.min(quantity, product.stock)));
+  const bagWeightKg = product.bagWeightKg ?? product.packSizeKg ?? 26;
+  const currentBags = Math.max(0, Math.floor(product.bagStock ?? (product.unitKind === 'COUNTED' ? product.stock : 0)));
+  const currentRetailKg = Math.max(0, product.retailStockKg ?? (product.unitKind === 'WEIGHED' ? product.stock - currentBags * bagWeightKg : 0));
+
+  if (product.unitKind === 'COUNTED') {
+    const nextBags = Math.max(0, currentBags - soldQuantity);
+    return { bagStock: nextBags, retailStockKg: 0, stock: nextBags, openedBags: 0 };
+  }
+
+  const bagSaleCount = soldQuantity / bagWeightKg;
+  const isWholeBagSale = saleMode === 'BAG' && Math.abs(bagSaleCount - Math.round(bagSaleCount)) < 0.001;
+  if (isWholeBagSale) {
+    const bagsSold = Math.min(currentBags, Math.round(bagSaleCount));
+    const nextBags = currentBags - bagsSold;
+    return {
+      bagStock: nextBags,
+      retailStockKg: roundQuantity(currentRetailKg),
+      stock: roundQuantity(nextBags * bagWeightKg + currentRetailKg),
+      openedBags: 0,
+    };
+  }
+
+  const shortageKg = Math.max(0, soldQuantity - currentRetailKg);
+  const openedBags = shortageKg > 0 ? Math.min(currentBags, Math.ceil((shortageKg - 0.000001) / bagWeightKg)) : 0;
+  const nextBags = currentBags - openedBags;
+  const nextRetailKg = roundQuantity(Math.max(0, currentRetailKg + openedBags * bagWeightKg - soldQuantity));
+  return {
+    bagStock: nextBags,
+    retailStockKg: nextRetailKg,
+    stock: roundQuantity(nextBags * bagWeightKg + nextRetailKg),
+    openedBags,
+  };
+}
+
 export function stepQuantity(value: number | string, direction: 'up' | 'down', step = 0.25, min = step, max = Number.POSITIVE_INFINITY) {
   const parsed = Number(value);
   const current = Number.isFinite(parsed) ? parsed : min;
@@ -95,15 +138,17 @@ export function parseBillingCommand(input: string, products: BillableProduct[]):
   if (!sourceText) return { ...fallback, error: 'Enter an item, SKU, or barcode.' };
 
   const packMatch = sourceText.match(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*kg\b/i);
+  const bagMatch = sourceText.match(/(\d+(?:\.\d+)?)\s*bags?\b/i);
   const amountMatch = sourceText.match(/(?:₹|rs\.?|inr)\s*(\d+(?:\.\d+)?)/i);
   const gramsMatch = sourceText.match(/(\d+(?:\.\d+)?)\s*g(?:rams?)?\b/i);
   const kgMatch = sourceText.match(/(\d+(?:\.\d+)?)\s*kgs?\b/i);
-  const countMatch = !packMatch && !amountMatch && !gramsMatch && !kgMatch
+  const countMatch = !packMatch && !bagMatch && !amountMatch && !gramsMatch && !kgMatch
     ? sourceText.match(/^\s*(\d+(?:\.\d+)?)\s+(?=[a-z\p{L}])/iu)
     : null;
 
   const productQuery = sourceText
     .replace(/(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*kg\b/ig, ' ')
+    .replace(/(\d+(?:\.\d+)?)\s*bags?\b/ig, ' ')
     .replace(/(?:₹|rs\.?|inr)\s*(\d+(?:\.\d+)?)/ig, ' ')
     .replace(/(\d+(?:\.\d+)?)\s*g(?:rams?)?\b/ig, ' ')
     .replace(/(\d+(?:\.\d+)?)\s*kgs?\b/ig, ' ')
@@ -122,7 +167,14 @@ export function parseBillingCommand(input: string, products: BillableProduct[]):
   let quantity = 1;
   let mode: ParsedBillingCommand['mode'] = 'DEFAULT';
 
-  if (packMatch) {
+  if (bagMatch) {
+    const bags = Number(bagMatch[1]);
+    if (!Number.isInteger(bags)) return { ...fallback, productId: product.id, confidence: match.score, error: 'Bags must be sold as whole units.' };
+    const bagWeight = product.bagWeightKg ?? product.packSizeKg;
+    if (!isCounted && !bagWeight) return { ...fallback, productId: product.id, confidence: match.score, error: `Set the bag weight for ${product.name} before selling bags.` };
+    quantity = isCounted ? bags : bags * bagWeight!;
+    mode = 'PACK';
+  } else if (packMatch) {
     const packs = Number(packMatch[1]);
     const packKg = Number(packMatch[2]);
     quantity = isCounted && product.packSizeKg && Math.abs(product.packSizeKg - packKg) < 0.01 ? packs : packs * packKg;
