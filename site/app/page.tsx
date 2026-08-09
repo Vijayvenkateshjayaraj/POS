@@ -8,6 +8,7 @@ type Page = 'billing' | 'inventory' | 'deliveries' | 'customers' | 'bills';
 type StockStatus = 'In stock' | 'Low stock' | 'Out of stock';
 type DeliveryStatus = 'Pending' | 'Out for delivery' | 'Delivered' | 'Failed';
 type RestaurantStatus = 'Active' | 'On hold';
+type ColorTheme = 'light' | 'dark';
 
 type Product = {
   id: number;
@@ -242,10 +243,18 @@ export default function Home() {
   const [failedPrintIds, setFailedPrintIds] = useState<string[]>(['INV-2046']);
   const [syncQueue, setSyncQueue] = useState<QueuedBillingSync[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<ColorTheme>('light');
   const [toast, setToast] = useState('');
   const completionLock = useRef(false);
 
   useEffect(() => {
+    const storedTheme = window.localStorage.getItem('svt-color-theme');
+    const initialTheme: ColorTheme = storedTheme === 'light' || storedTheme === 'dark'
+      ? storedTheme
+      : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    setTheme(initialTheme);
+    document.documentElement.dataset.theme = initialTheme;
     setIsOnline(window.navigator.onLine);
     const stored = window.localStorage.getItem('svt-parked-billing-sessions');
     if (stored) {
@@ -527,6 +536,13 @@ export default function Home() {
     }
   };
 
+  const selectTheme = (nextTheme: ColorTheme) => {
+    setTheme(nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    window.localStorage.setItem('svt-color-theme', nextTheme);
+    setSettingsOpen(false);
+  };
+
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
@@ -554,8 +570,32 @@ export default function Home() {
           </button>
           <div className="user-card">
             <span className="avatar">AM</span>
-            <span><strong>Arun Manager</strong><small>Administrator</small></span>
-            <button aria-label="Account options">⋮</button>
+            <span className="user-identity"><strong>Arun Manager</strong><small>Administrator</small></span>
+            <button
+              className="settings-button"
+              type="button"
+              aria-label="Appearance settings"
+              aria-haspopup="menu"
+              aria-expanded={settingsOpen}
+              onClick={() => setSettingsOpen((current) => !current)}
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+            {settingsOpen && (
+              <div className="theme-menu" role="menu" aria-label="Appearance">
+                <div className="theme-menu-heading"><strong>Appearance</strong><small>Choose your display mode</small></div>
+                <button className={theme === 'light' ? 'selected' : ''} role="menuitemradio" aria-checked={theme === 'light'} onClick={() => selectTheme('light')}>
+                  <span className="theme-preview light" aria-hidden="true">☀</span>
+                  <span><strong>Light</strong><small>Bright workspace</small></span>
+                  <b aria-hidden="true">{theme === 'light' ? '✓' : ''}</b>
+                </button>
+                <button className={theme === 'dark' ? 'selected' : ''} role="menuitemradio" aria-checked={theme === 'dark'} onClick={() => selectTheme('dark')}>
+                  <span className="theme-preview dark" aria-hidden="true">☾</span>
+                  <span><strong>Dark</strong><small>Comfortable in low light</small></span>
+                  <b aria-hidden="true">{theme === 'dark' ? '✓' : ''}</b>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -725,9 +765,6 @@ function BillingPage({
   const [splitPayment, setSplitPayment] = useState(false);
   const [splitAmount, setSplitAmount] = useState('');
   const [managerOverride, setManagerOverride] = useState(false);
-  const [scaleConnected, setScaleConnected] = useState(true);
-  const [scaleStable, setScaleStable] = useState(true);
-  const [scaleWeight, setScaleWeight] = useState(2.48);
   const [stockRescue, setStockRescue] = useState<{ product: Product; quantity: number; expression?: string; saleMode?: 'RETAIL' | 'BAG' } | null>(null);
   const [externalOrderOpen, setExternalOrderOpen] = useState(false);
   const [externalOrderText, setExternalOrderText] = useState('10kg ponni rice\n₹500 toor dal\n3 x 5kg atta');
@@ -776,7 +813,6 @@ function BillingPage({
   const blockingGuardrails = guardrailIssues.filter((issue) => issue.severity === 'block');
   const total = subtotal + tax;
   const cashChange = Math.max(0, Number(cashTendered || 0) - total);
-  const lastWeighedLine = [...cart].reverse().find((line) => line.unitKind === 'WEIGHED');
   const restaurantUsualBill = selectedRestaurant ? bills.find((bill) => bill.phone === selectedRestaurant.phone || bill.customer === selectedRestaurant.name) : undefined;
   const preferredItem = selectedRestaurant?.name === 'Annapoorna Bhavan' ? 'Ponni Boiled Rice' : selectedCustomer?.topItem;
   const quickProducts = [...products]
@@ -1100,14 +1136,6 @@ function BillingPage({
       durationSeconds: Math.max(1, Math.round((Date.now() - billStartedAt.current) / 1000)),
       paymentPending: payment === 'UPI' && (!isOnline || upiState !== 'CONFIRMED'),
     });
-  };
-
-  const useScaleReading = () => {
-    if (!lastWeighedLine || !scaleConnected || !scaleStable) return;
-    setCartQuantity(lastWeighedLine.lineId, scaleWeight);
-    setQuantityDrafts((current) => ({ ...current, [lastWeighedLine.lineId]: String(scaleWeight) }));
-    setProductSelectionMessage(`${scaleWeight.toFixed(3)} kg accepted from the connected scale for ${lastWeighedLine.name}.`);
-    window.requestAnimationFrame(() => skuInputRef.current?.focus());
   };
 
   const analyzeExternalOrder = () => setExternalLines(parseExternalOrder(externalOrderText, products));
@@ -1463,11 +1491,6 @@ function BillingPage({
 
             <aside className="cart-panel checkout-panel">
               <div className="cart-heading"><div><p>Current order</p><h2>{cart.length} {cart.length === 1 ? 'item' : 'items'}</h2></div><div><button disabled={!cart.length} onClick={parkBill}>Park</button><button disabled={!cart.length} onClick={() => { clearCart(); setQuantityDrafts({}); setPriceDrafts({}); }}>Clear</button></div></div>
-              <div className={`scale-station ${scaleConnected ? '' : 'disconnected'}`}>
-                <div className="scale-head"><span><i /> Connected scale</span><button onClick={() => setScaleConnected((current) => !current)}>{scaleConnected ? 'Disconnect' : 'Reconnect'}</button></div>
-                <div className="scale-reading"><strong>{scaleConnected ? scaleWeight.toFixed(3) : '—.——'}</strong><span>kg</span><small className={scaleStable ? 'positive' : 'warning'}>{scaleConnected ? (scaleStable ? '● Stable' : '◌ Settling') : 'Disconnected'}</small></div>
-                <div className="scale-actions"><button onClick={() => { setScaleStable(false); window.setTimeout(() => { setScaleWeight((current) => Number((current + 0.125).toFixed(3))); setScaleStable(true); }, 650); }}>New reading</button><button onClick={() => setScaleWeight(0)}>Tare</button><button className="accept-weight" disabled={!lastWeighedLine || !scaleConnected || !scaleStable} onClick={useScaleReading}>Use for {lastWeighedLine?.short ?? 'item'}</button></div>
-              </div>
               <div className="order-overview"><div><span>Items</span><strong>{cart.length}</strong></div><div><span>Total weight</span><strong>{totalWeight.toLocaleString('en-IN', { maximumFractionDigits: 2 })} kg</strong></div></div>
               <div className="cart-bottom">
                 <label className="delivery-toggle"><span><b>{isRestaurant ? 'Restaurant delivery' : 'Home delivery'}</b><small>Create a delivery job after billing</small></span><input type="checkbox" checked={delivery} onChange={(event) => setDelivery(event.target.checked)} /><i /></label>
