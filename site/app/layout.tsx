@@ -3,6 +3,8 @@ import { headers } from 'next/headers';
 import type { ReactNode } from 'react';
 import './globals.css';
 
+const themeInitializer = `(function(){try{var saved=localStorage.getItem('svt-color-theme');var theme=saved==='light'||saved==='dark'?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');document.documentElement.dataset.theme=theme;}catch(error){document.documentElement.dataset.theme='light';}})();`;
+
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
   const host =
@@ -36,7 +38,8 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
+      <head><script dangerouslySetInnerHTML={{ __html: themeInitializer }} /></head>
       <body>{children}</body>
     </html>
   );
