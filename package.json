@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @unified-commerce/api && npm run build --workspace @unified-commerce/web",
+    "test": "npm run test --workspace @unified-commerce/api && npm run test --workspace @unified-commerce/web",
     "dev:api": "npm run dev --workspace @unified-commerce/api",
     "dev:web": "npm run dev --workspace @unified-commerce/web",
     "db:migrate": "npm run db:migrate --workspace @unified-commerce/api",
@@ -18,4 +19,3 @@
     "npm": ">=10.0.0"
   }
 }
-

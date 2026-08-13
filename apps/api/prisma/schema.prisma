@@ -34,6 +34,69 @@ enum Channel {
   WHOLESALE
 }
 
+enum BillingSessionState {
+  ACTIVE
+  PARKED
+  PAYMENT_PENDING
+  COMPLETED
+  SYNC_REQUIRED
+  CANCELLED
+}
+
+enum BillingPaymentMethod {
+  CASH
+  UPI
+  CARD
+  CREDIT
+  SPLIT
+}
+
+enum PaymentAttemptState {
+  CREATED
+  PENDING
+  CAPTURED
+  FAILED
+  CANCELLED
+}
+
+enum StockReservationState {
+  ACTIVE
+  COMMITTED
+  RELEASED
+  EXPIRED
+}
+
+enum ManagerOverrideState {
+  REQUESTED
+  APPROVED
+  REJECTED
+}
+
+enum ExternalOrderDraftState {
+  REVIEW
+  APPROVED
+  IMPORTED
+  REJECTED
+}
+
+enum ExternalOrderLineState {
+  MATCHED
+  REVIEW
+  APPROVED
+  REJECTED
+  UNMATCHED
+}
+
+enum DeviceEventKind {
+  SCALE_READING
+  SCALE_TARE
+  BARCODE_SCAN
+  PRINT_SUCCEEDED
+  PRINT_FAILED
+  DEVICE_CONNECTED
+  DEVICE_DISCONNECTED
+}
+
 model Location {
   id             String              @id @default(uuid()) @db.Uuid
   code           String              @unique
@@ -47,6 +110,9 @@ model Location {
   visibility     ChannelVisibility[]
   balances       InventoryBalance[]
   inventoryMoves InventoryLedger[]
+  billingSessions BillingSession[]
+  reservations    StockReservation[]
+  invoices        Invoice[]
 
   @@map("locations")
 }
@@ -114,6 +180,9 @@ model Product {
   balances              InventoryBalance[]
   inventoryMoves        InventoryLedger[]
   suppliers             ProductSupplier[]
+  billingLines          BillingLine[]
+  reservations          StockReservation[]
+  externalDraftLines    ExternalOrderDraftLine[]
 
   @@index([categoryId, status])
   @@map("products")
@@ -247,3 +316,199 @@ model AuditEvent {
   @@map("audit_events")
 }
 
+model BillingSession {
+  id                   String                 @id @default(uuid()) @db.Uuid
+  idempotencyKey       String                 @unique @map("idempotency_key")
+  locationId           String                 @map("location_id") @db.Uuid
+  state                BillingSessionState    @default(ACTIVE)
+  channel              Channel                @default(POS)
+  recipient            Json?
+  offline              Boolean                @default(false)
+  startedAt            DateTime               @default(now()) @map("started_at") @db.Timestamptz(3)
+  firstItemAt          DateTime?              @map("first_item_at") @db.Timestamptz(3)
+  completedAt          DateTime?              @map("completed_at") @db.Timestamptz(3)
+  subtotalAmountPaise  Int                    @default(0) @map("subtotal_amount_paise")
+  taxAmountPaise       Int                    @default(0) @map("tax_amount_paise")
+  totalAmountPaise     Int                    @default(0) @map("total_amount_paise")
+  createdAt            DateTime               @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt            DateTime               @updatedAt @map("updated_at") @db.Timestamptz(3)
+  location             Location               @relation(fields: [locationId], references: [id])
+  lines                BillingLine[]
+  payments             PaymentAttempt[]
+  reservations         StockReservation[]
+  invoice              Invoice?
+  overrides            ManagerOverride[]
+  analytics            BillingAnalyticsEvent[]
+  externalDrafts       ExternalOrderDraft[]
+
+  @@index([locationId, state, updatedAt])
+  @@map("billing_sessions")
+}
+
+model BillingLine {
+  id                   String         @id @default(uuid()) @db.Uuid
+  billingSessionId     String         @map("billing_session_id") @db.Uuid
+  productId            String         @map("product_id") @db.Uuid
+  lineNumber           Int            @map("line_number")
+  quantityBase         BigInt         @map("quantity_base")
+  enteredExpression    String?        @map("entered_expression")
+  productNameSnapshot  String         @map("product_name_snapshot")
+  skuSnapshot          String         @map("sku_snapshot")
+  unitPriceAmountPaise Int            @map("unit_price_amount_paise")
+  priceQuantityBase    BigInt         @map("price_quantity_base")
+  costAmountPaise      Int?           @map("cost_amount_paise")
+  taxAmountPaise       Int            @map("tax_amount_paise")
+  lineTotalAmountPaise Int            @map("line_total_amount_paise")
+  fulfillmentLocation String?         @map("fulfillment_location")
+  createdAt            DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  billingSession       BillingSession @relation(fields: [billingSessionId], references: [id], onDelete: Cascade)
+  product              Product        @relation(fields: [productId], references: [id])
+  overrides            ManagerOverride[]
+
+  @@unique([billingSessionId, lineNumber])
+  @@index([productId])
+  @@map("billing_lines")
+}
+
+model PaymentAttempt {
+  id                String              @id @default(uuid()) @db.Uuid
+  billingSessionId  String              @map("billing_session_id") @db.Uuid
+  idempotencyKey    String              @unique @map("idempotency_key")
+  method            BillingPaymentMethod
+  amountPaise       Int                 @map("amount_paise")
+  state             PaymentAttemptState @default(CREATED)
+  providerReference String?             @unique @map("provider_reference")
+  providerPayload   Json?               @map("provider_payload")
+  createdAt         DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime            @updatedAt @map("updated_at") @db.Timestamptz(3)
+  billingSession    BillingSession      @relation(fields: [billingSessionId], references: [id], onDelete: Cascade)
+  webhookEvents     PaymentWebhookEvent[]
+
+  @@index([billingSessionId, state])
+  @@map("payment_attempts")
+}
+
+model PaymentWebhookEvent {
+  id               String          @id @default(uuid()) @db.Uuid
+  provider         String
+  providerEventId  String          @unique @map("provider_event_id")
+  paymentAttemptId String?         @map("payment_attempt_id") @db.Uuid
+  payload          Json
+  processedAt      DateTime        @default(now()) @map("processed_at") @db.Timestamptz(3)
+  paymentAttempt   PaymentAttempt? @relation(fields: [paymentAttemptId], references: [id])
+
+  @@map("payment_webhook_events")
+}
+
+model Invoice {
+  id                  String         @id @default(uuid()) @db.Uuid
+  invoiceNumber       String         @unique @map("invoice_number")
+  billingSessionId    String         @unique @map("billing_session_id") @db.Uuid
+  locationId          String         @map("location_id") @db.Uuid
+  subtotalAmountPaise Int            @map("subtotal_amount_paise")
+  taxAmountPaise      Int            @map("tax_amount_paise")
+  totalAmountPaise    Int            @map("total_amount_paise")
+  paymentStatus       String         @map("payment_status")
+  snapshot            Json
+  issuedAt            DateTime       @default(now()) @map("issued_at") @db.Timestamptz(3)
+  billingSession      BillingSession @relation(fields: [billingSessionId], references: [id])
+  location            Location       @relation(fields: [locationId], references: [id])
+
+  @@index([locationId, issuedAt])
+  @@map("invoices")
+}
+
+model StockReservation {
+  id               String                @id @default(uuid()) @db.Uuid
+  billingSessionId String                @map("billing_session_id") @db.Uuid
+  productId        String                @map("product_id") @db.Uuid
+  locationId       String                @map("location_id") @db.Uuid
+  quantityBase     BigInt                @map("quantity_base")
+  state            StockReservationState @default(ACTIVE)
+  expiresAt        DateTime              @map("expires_at") @db.Timestamptz(3)
+  createdAt        DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.Timestamptz(3)
+  billingSession   BillingSession        @relation(fields: [billingSessionId], references: [id], onDelete: Cascade)
+  product          Product               @relation(fields: [productId], references: [id])
+  location         Location              @relation(fields: [locationId], references: [id])
+
+  @@unique([billingSessionId, productId, locationId])
+  @@index([locationId, state, expiresAt])
+  @@map("stock_reservations")
+}
+
+model ManagerOverride {
+  id               String               @id @default(uuid()) @db.Uuid
+  billingSessionId String               @map("billing_session_id") @db.Uuid
+  billingLineId    String?              @map("billing_line_id") @db.Uuid
+  ruleCode         String               @map("rule_code")
+  reason           String
+  state            ManagerOverrideState @default(REQUESTED)
+  requestedBy      String               @map("requested_by")
+  approvedBy       String?              @map("approved_by")
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  resolvedAt       DateTime?            @map("resolved_at") @db.Timestamptz(3)
+  billingSession   BillingSession       @relation(fields: [billingSessionId], references: [id], onDelete: Cascade)
+  billingLine      BillingLine?         @relation(fields: [billingLineId], references: [id])
+
+  @@index([billingSessionId, state])
+  @@map("manager_overrides")
+}
+
+model ExternalOrderDraft {
+  id               String                  @id @default(uuid()) @db.Uuid
+  billingSessionId String?                 @map("billing_session_id") @db.Uuid
+  source           String
+  sourceReference  String?                 @map("source_reference")
+  rawText          String                  @map("raw_text")
+  state            ExternalOrderDraftState @default(REVIEW)
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime                @updatedAt @map("updated_at") @db.Timestamptz(3)
+  billingSession   BillingSession?         @relation(fields: [billingSessionId], references: [id], onDelete: SetNull)
+  lines            ExternalOrderDraftLine[]
+
+  @@index([state, createdAt])
+  @@map("external_order_drafts")
+}
+
+model ExternalOrderDraftLine {
+  id                   String                 @id @default(uuid()) @db.Uuid
+  externalOrderDraftId String                 @map("external_order_draft_id") @db.Uuid
+  sourceText           String                 @map("source_text")
+  productId            String?                @map("product_id") @db.Uuid
+  quantityBase         BigInt?                @map("quantity_base")
+  confidenceBasisPt    Int                    @default(0) @map("confidence_basis_points")
+  state                ExternalOrderLineState @default(REVIEW)
+  approvedBy           String?                @map("approved_by")
+  externalOrderDraft   ExternalOrderDraft     @relation(fields: [externalOrderDraftId], references: [id], onDelete: Cascade)
+  product              Product?               @relation(fields: [productId], references: [id])
+
+  @@index([externalOrderDraftId, state])
+  @@map("external_order_draft_lines")
+}
+
+model BillingAnalyticsEvent {
+  id               String         @id @default(uuid()) @db.Uuid
+  billingSessionId String?        @map("billing_session_id") @db.Uuid
+  eventType        String         @map("event_type")
+  durationMs       Int?           @map("duration_ms")
+  payload          Json?
+  createdAt        DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  billingSession   BillingSession? @relation(fields: [billingSessionId], references: [id], onDelete: SetNull)
+
+  @@index([eventType, createdAt])
+  @@map("billing_analytics_events")
+}
+
+model DeviceEvent {
+  id           String          @id @default(uuid()) @db.Uuid
+  deviceId     String          @map("device_id")
+  eventKind    DeviceEventKind @map("event_kind")
+  eventKey     String          @unique @map("event_key")
+  payload      Json
+  occurredAt   DateTime        @map("occurred_at") @db.Timestamptz(3)
+  receivedAt   DateTime        @default(now()) @map("received_at") @db.Timestamptz(3)
+
+  @@index([deviceId, occurredAt])
+  @@map("device_events")
+}

@@ -1,27 +1,19 @@
 'use client';
 
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react';
+import { allocateInventorySale, evaluateGuardrails, parseBillingCommand, parseExternalOrder, stepQuantity, type ExternalOrderLine } from './billing-engine';
+import { persistCompletedBill, type CompleteBillingInput } from './billing-api';
+import { SupplierReceivingPage, type InventoryProduct } from './supplier-receiving-page';
 
-type Page = 'billing' | 'inventory' | 'deliveries' | 'customers' | 'bills';
+type Page = 'billing' | 'inventory' | 'receiving' | 'deliveries' | 'customers' | 'bills';
 type StockStatus = 'In stock' | 'Low stock' | 'Out of stock';
 type DeliveryStatus = 'Pending' | 'Out for delivery' | 'Delivered' | 'Failed';
 type RestaurantStatus = 'Active' | 'On hold';
+type ColorTheme = 'light' | 'dark';
 
-type Product = {
-  id: number;
-  name: string;
-  short: string;
-  sku: string;
-  category: string;
-  unit: string;
-  price: number;
-  stock: number;
-  reorder: number;
-  color: string;
-  shop: string;
-};
+type Product = InventoryProduct;
 
-type CartLine = Product & { lineId: number; quantity: number };
+type CartLine = Product & { lineId: number; quantity: number; enteredExpression?: string; fulfillmentShop?: string; saleMode?: 'RETAIL' | 'BAG' };
 
 type Customer = {
   id: number;
@@ -45,7 +37,46 @@ type Bill = {
   payment: string;
   status: 'Paid' | 'Pending' | 'Refunded';
   shop: string;
+  syncState?: 'SYNCED' | 'SYNC_REQUIRED';
+  durationSeconds?: number;
 };
+
+type BillingRecipientDraft = {
+  kind: 'walk-in' | 'new' | 'existing' | 'new-restaurant' | 'existing-restaurant';
+  customerId?: number;
+  restaurantId?: number;
+  name: string;
+  phone: string;
+  address: string;
+  contact: string;
+  email: string;
+  area: string;
+  gstin: string;
+  deliverySlot: string;
+  creditLimit: string;
+  payment?: string;
+  delivery?: boolean;
+};
+
+type ParkedBillingSession = {
+  id: string;
+  label: string;
+  createdAt: string;
+  cart: CartLine[];
+  recipient: BillingRecipientDraft;
+  payment: string;
+  delivery: boolean;
+};
+
+type RecoveryItem = {
+  id: string;
+  kind: 'PAYMENT' | 'PRINT' | 'SYNC' | 'APPROVAL';
+  title: string;
+  detail: string;
+  tone: 'amber' | 'red' | 'blue';
+};
+
+type QueuedBillingSync = { billId: string; payload: CompleteBillingInput };
 
 type Delivery = {
   id: string;
@@ -82,14 +113,14 @@ type Restaurant = {
 type RestaurantBillingDetails = Pick<Restaurant, 'contact' | 'email' | 'area' | 'gstin' | 'deliverySlot' | 'creditLimit'> & { id?: number };
 
 const initialProducts: Product[] = [
-  { id: 1, name: 'Ponni Boiled Rice', short: 'PR', sku: 'RIC-PON-01', category: 'Grains', unit: 'kg', price: 72, stock: 84, reorder: 20, color: '#e7c772', shop: 'Anna Nagar' },
-  { id: 2, name: 'Toor Dal Premium', short: 'TD', sku: 'DAL-TOO-02', category: 'Pulses', unit: 'kg', price: 168, stock: 12, reorder: 15, color: '#e9a94f', shop: 'Anna Nagar' },
-  { id: 3, name: 'Gingelly Oil', short: 'GO', sku: 'OIL-GIN-01', category: 'Oils', unit: '1 L', price: 349, stock: 31, reorder: 10, color: '#d08c3d', shop: 'Ayyanambakkam' },
-  { id: 4, name: 'Aashirvaad Atta', short: 'AA', sku: 'FLO-AAT-05', category: 'Flour', unit: '5 kg', price: 292, stock: 9, reorder: 12, color: '#c97a57', shop: 'Anna Nagar' },
-  { id: 5, name: 'Crystal Salt', short: 'CS', sku: 'SPI-SAL-01', category: 'Spices', unit: '1 kg', price: 28, stock: 120, reorder: 30, color: '#91aaba', shop: 'Ayyanambakkam' },
-  { id: 6, name: 'Jaggery Cubes', short: 'JC', sku: 'SUG-JAG-01', category: 'Sweeteners', unit: 'kg', price: 86, stock: 0, reorder: 10, color: '#9e6d43', shop: 'Anna Nagar' },
-  { id: 7, name: 'Idli Rice', short: 'IR', sku: 'RIC-IDL-05', category: 'Grains', unit: '5 kg', price: 365, stock: 46, reorder: 12, color: '#d8c9a2', shop: 'Ayyanambakkam' },
-  { id: 8, name: 'Urad Dal Whole', short: 'UD', sku: 'DAL-URA-01', category: 'Pulses', unit: 'kg', price: 192, stock: 23, reorder: 15, color: '#7c7069', shop: 'Anna Nagar' },
+  { id: 1, name: 'Ponni Boiled Rice', short: 'PR', sku: 'RIC-PON-01', barcode: '890100000001', aliases: ['ponni rice', 'boiled rice', 'பொன்னி அரிசி', 'ponni arisi'], category: 'Grains', unit: 'kg', unitKind: 'WEIGHED', price: 72, cost: 61, stock: 84, bagStock: 3, retailStockKg: 6, bagWeightKg: 26, otherShopStock: 46, reorder: 20, color: '#e7c772', shop: 'Anna Nagar' },
+  { id: 2, name: 'Toor Dal Premium', short: 'TD', sku: 'DAL-TOO-02', barcode: '890100000002', aliases: ['toor dal', 'thuvaram paruppu', 'துவரம் பருப்பு'], category: 'Pulses', unit: 'kg', unitKind: 'WEIGHED', price: 168, cost: 145, stock: 12, bagStock: 0, retailStockKg: 12, bagWeightKg: 26, otherShopStock: 35, reorder: 15, color: '#e9a94f', shop: 'Anna Nagar' },
+  { id: 3, name: 'Gingelly Oil', short: 'GO', sku: 'OIL-GIN-01', barcode: '890100000003', aliases: ['sesame oil', 'nallennai', 'நல்லெண்ணெய்'], category: 'Oils', unit: '1 L', unitKind: 'COUNTED', packSizeKg: 1, price: 349, cost: 306, stock: 31, bagStock: 31, retailStockKg: 0, bagWeightKg: 1, otherShopStock: 18, reorder: 10, color: '#d08c3d', shop: 'Ayyanambakkam' },
+  { id: 4, name: 'Aashirvaad Atta', short: 'AA', sku: 'FLO-AAT-05', barcode: '890100000004', aliases: ['atta', 'wheat flour', 'கோதுமை மாவு'], category: 'Flour', unit: '5 kg', unitKind: 'COUNTED', packSizeKg: 5, price: 292, cost: 258, stock: 9, bagStock: 9, retailStockKg: 0, bagWeightKg: 5, otherShopStock: 22, reorder: 12, color: '#c97a57', shop: 'Anna Nagar' },
+  { id: 5, name: 'Crystal Salt', short: 'CS', sku: 'SPI-SAL-01', barcode: '890100000005', aliases: ['salt', 'uppu', 'உப்பு'], category: 'Spices', unit: '1 kg', unitKind: 'COUNTED', packSizeKg: 1, price: 28, cost: 20, stock: 120, bagStock: 120, retailStockKg: 0, bagWeightKg: 1, otherShopStock: 75, reorder: 30, color: '#91aaba', shop: 'Ayyanambakkam' },
+  { id: 6, name: 'Jaggery Cubes', short: 'JC', sku: 'SUG-JAG-01', barcode: '890100000006', aliases: ['jaggery', 'vellam', 'வெல்லம்'], category: 'Sweeteners', unit: 'kg', unitKind: 'WEIGHED', price: 86, cost: 72, stock: 0, bagStock: 0, retailStockKg: 0, bagWeightKg: 26, otherShopStock: 18, reorder: 10, color: '#9e6d43', shop: 'Anna Nagar' },
+  { id: 7, name: 'Idli Rice', short: 'IR', sku: 'RIC-IDL-05', barcode: '890100000007', aliases: ['idly rice', 'இட்லி அரிசி'], category: 'Grains', unit: '5 kg', unitKind: 'COUNTED', packSizeKg: 5, price: 365, cost: 318, stock: 46, bagStock: 46, retailStockKg: 0, bagWeightKg: 5, otherShopStock: 28, reorder: 12, color: '#d8c9a2', shop: 'Ayyanambakkam' },
+  { id: 8, name: 'Urad Dal Whole', short: 'UD', sku: 'DAL-URA-01', barcode: '890100000008', aliases: ['urad dal', 'ulundhu', 'உளுந்து'], category: 'Pulses', unit: 'kg', unitKind: 'WEIGHED', price: 192, cost: 164, stock: 23, bagStock: 0, retailStockKg: 23, bagWeightKg: 26, otherShopStock: 14, reorder: 15, color: '#7c7069', shop: 'Anna Nagar' },
 ];
 
 const initialCustomers: Customer[] = [
@@ -146,6 +177,7 @@ const initialRestaurants: Restaurant[] = [
 const navItems: Array<{ id: Page; label: string; icon: string }> = [
   { id: 'billing', label: 'Billing', icon: '▤' },
   { id: 'inventory', label: 'Inventory', icon: '□' },
+  { id: 'receiving', label: 'Stock receiving', icon: '⇣' },
   { id: 'deliveries', label: 'Deliveries', icon: '⌁' },
   { id: 'customers', label: 'Customers', icon: '◎' },
   { id: 'bills', label: 'All bills', icon: '≡' },
@@ -184,8 +216,60 @@ export default function Home() {
   const [selectedBill, setSelectedBill] = useState<Bill | null>(null);
   const [customerDetail, setCustomerDetail] = useState<Customer | null>(null);
   const [billingSession, setBillingSession] = useState(0);
+  const [resumeDraft, setResumeDraft] = useState<BillingRecipientDraft | null>(null);
+  const [parkedSessions, setParkedSessions] = useState<ParkedBillingSession[]>([]);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(true);
+  const [pendingPaymentIds, setPendingPaymentIds] = useState<string[]>([]);
+  const [failedPrintIds, setFailedPrintIds] = useState<string[]>(['INV-2046']);
+  const [syncQueue, setSyncQueue] = useState<QueuedBillingSync[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [theme, setTheme] = useState<ColorTheme>('light');
   const [toast, setToast] = useState('');
+  const completionLock = useRef(false);
+
+  useEffect(() => {
+    const storedTheme = window.localStorage.getItem('svt-color-theme');
+    const initialTheme: ColorTheme = storedTheme === 'light' || storedTheme === 'dark'
+      ? storedTheme
+      : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    setTheme(initialTheme);
+    document.documentElement.dataset.theme = initialTheme;
+    setIsOnline(window.navigator.onLine);
+    const stored = window.localStorage.getItem('svt-parked-billing-sessions');
+    if (stored) {
+      try { setParkedSessions(JSON.parse(stored) as ParkedBillingSession[]); } catch { window.localStorage.removeItem('svt-parked-billing-sessions'); }
+    }
+    const storedSyncQueue = window.localStorage.getItem('svt-billing-sync-queue');
+    if (storedSyncQueue) {
+      try { setSyncQueue(JSON.parse(storedSyncQueue) as QueuedBillingSync[]); } catch { window.localStorage.removeItem('svt-billing-sync-queue'); }
+    }
+    const goOnline = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+
+  const persistParkedSessions = (sessions: ParkedBillingSession[]) => {
+    setParkedSessions(sessions);
+    window.localStorage.setItem('svt-parked-billing-sessions', JSON.stringify(sessions));
+  };
+
+  const persistSyncQueue = (entries: QueuedBillingSync[]) => {
+    setSyncQueue(entries);
+    window.localStorage.setItem('svt-billing-sync-queue', JSON.stringify(entries));
+  };
+
+  const queueBillForSync = (entry: QueuedBillingSync) => {
+    const next = [entry, ...syncQueue.filter((candidate) => candidate.billId !== entry.billId)];
+    persistSyncQueue(next);
+    setBills((current) => current.map((bill) => bill.id === entry.billId ? { ...bill, syncState: 'SYNC_REQUIRED' } : bill));
+  };
 
   const navigate = (next: Page) => {
     setPage(next);
@@ -193,10 +277,11 @@ export default function Home() {
     setMenuOpen(false);
   };
 
-  const addToCart = (product: Product, initialQuantity: number) => {
-    if (product.stock === 0 || initialQuantity <= 0) return null;
+  const addToCart = (product: Product, initialQuantity: number, metadata?: Pick<CartLine, 'enteredExpression' | 'fulfillmentShop' | 'saleMode'>) => {
+    const sellableStock = metadata?.fulfillmentShop && metadata.fulfillmentShop !== product.shop ? product.otherShopStock ?? 0 : product.stock;
+    if (sellableStock === 0 || initialQuantity <= 0) return null;
     const lineId = nextCartLineId.current++;
-    setCart((current) => [...current, { ...product, lineId, quantity: initialQuantity }]);
+    setCart((current) => [...current, { ...product, stock: sellableStock, lineId, quantity: initialQuantity, ...metadata }]);
     return lineId;
   };
 
@@ -217,13 +302,13 @@ export default function Home() {
     const nextPrice = Number(price.toFixed(2));
     if (!Number.isFinite(nextPrice) || nextPrice <= 0) return;
     setCart((current) => current.map((item) => item.lineId === lineId ? { ...item, price: nextPrice } : item));
-    setProducts((current) => current.map((product) => product.id === productId ? { ...product, price: nextPrice } : product));
   };
 
   const removeFromCart = (lineId: number) => setCart((current) => current.filter((item) => item.lineId !== lineId));
 
-  const completeBill = (details: { name: string; phone: string; address: string; payment: string; delivery: boolean; restaurant?: RestaurantBillingDetails }) => {
-    if (!cart.length) return;
+  const completeBill = (details: { name: string; phone: string; address: string; payment: string; delivery: boolean; restaurant?: RestaurantBillingDetails; durationSeconds?: number; paymentPending?: boolean }) => {
+    if (!cart.length || completionLock.current) return;
+    completionLock.current = true;
     const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
     const total = Number((subtotal * 1.05).toFixed(2));
     const nextNumber = 2049 + (bills.length - initialBills.length);
@@ -235,22 +320,44 @@ export default function Home() {
       id: `INV-${nextNumber}`,
       customer: name,
       phone,
-      date: '07 Aug 2026',
+      date: now.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
       time: now.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' }),
       items: cart.map(({ name: itemName, quantity, price }) => ({ name: itemName, quantity, price })),
       amount: total,
       payment: details.payment,
-      status: details.payment === 'Credit' ? 'Pending' : 'Paid',
+      status: details.payment === 'Credit' || details.paymentPending ? 'Pending' : 'Paid',
       shop: 'Anna Nagar',
+      syncState: isOnline ? 'SYNCED' : 'SYNC_REQUIRED',
+      durationSeconds: details.durationSeconds,
     };
 
     setBills((current) => [bill, ...current]);
-    setProducts((current) =>
-      current.map((product) => {
-        const soldQuantity = cart.reduce((sum, item) => item.id === product.id ? sum + item.quantity : sum, 0);
-        return soldQuantity ? { ...product, stock: Math.max(0, product.stock - soldQuantity) } : product;
-      }),
-    );
+    const syncPayload: CompleteBillingInput = {
+      idempotencyKey: `pos-${bill.id}-${now.getTime()}`,
+      recipient: { name, phone, address, restaurantId: details.restaurant?.id },
+      lines: cart.map((line) => ({ sku: line.sku, name: line.name, unitKind: line.unitKind, quantity: line.quantity, price: line.price, enteredExpression: line.enteredExpression, fulfillmentShop: line.fulfillmentShop })),
+      payment: details.payment,
+      paymentPending: Boolean(details.paymentPending),
+      offline: !isOnline,
+      durationSeconds: details.durationSeconds,
+    };
+    if (isOnline) {
+      void persistCompletedBill(syncPayload).then((invoice) => {
+        setToast(`${bill.id} saved · server invoice ${invoice.invoiceNumber}`);
+        window.setTimeout(() => setToast(''), 3500);
+      }).catch(() => {
+        queueBillForSync({ billId: bill.id, payload: syncPayload });
+        setToast(`${bill.id} is safe locally · API sync queued`);
+        window.setTimeout(() => setToast(''), 3500);
+      });
+    } else queueBillForSync({ billId: bill.id, payload: syncPayload });
+    setProducts((current) => current.map((product) => {
+      const localLines = cart.filter((item) => item.id === product.id && (!item.fulfillmentShop || item.fulfillmentShop === product.shop));
+      return localLines.reduce<Product>((nextProduct, line) => {
+        const allocation = allocateInventorySale(nextProduct, line.quantity, line.saleMode ?? 'RETAIL');
+        return { ...nextProduct, bagStock: allocation.bagStock, retailStockKg: allocation.retailStockKg, stock: allocation.stock };
+      }, product);
+    }));
 
     if (details.restaurant) {
       const existingRestaurant = restaurants.find((restaurant) => restaurant.id === details.restaurant?.id);
@@ -330,9 +437,91 @@ export default function Home() {
     setCart([]);
     setSelectedCustomer(null);
     setSelectedRestaurant(null);
+    setResumeDraft(null);
     setSelectedBill(bill);
-    setToast(`${bill.id} created successfully`);
+    if (details.paymentPending) setPendingPaymentIds((current) => [...current, bill.id]);
+    setToast(`${bill.id} created${isOnline ? '' : ' offline — queued to sync'}`);
     window.setTimeout(() => setToast(''), 3500);
+    window.setTimeout(() => { completionLock.current = false; }, 500);
+  };
+
+  const parkCurrentSession = (session: Omit<ParkedBillingSession, 'id' | 'createdAt'>) => {
+    if (!session.cart.length) return;
+    const parked: ParkedBillingSession = { ...session, id: `PARK-${Date.now()}`, createdAt: new Date().toISOString() };
+    persistParkedSessions([parked, ...parkedSessions]);
+    setCart([]);
+    setSelectedCustomer(null);
+    setSelectedRestaurant(null);
+    setResumeDraft(null);
+    setBillingSession((current) => current + 1);
+    setToast(`${parked.label} parked safely`);
+    window.setTimeout(() => setToast(''), 3000);
+  };
+
+  const resumeParkedSession = (session: ParkedBillingSession) => {
+    setCart(session.cart.map((line) => ({ ...line, lineId: nextCartLineId.current++ })));
+    setSelectedCustomer(session.recipient.customerId ? customers.find((customer) => customer.id === session.recipient.customerId) ?? null : null);
+    setSelectedRestaurant(session.recipient.restaurantId ? restaurants.find((restaurant) => restaurant.id === session.recipient.restaurantId) ?? null : null);
+    setResumeDraft({ ...session.recipient, payment: session.payment, delivery: session.delivery });
+    persistParkedSessions(parkedSessions.filter((candidate) => candidate.id !== session.id));
+    setBillingSession((current) => current + 1);
+    navigate('billing');
+    setToast(`${session.label} resumed`);
+    window.setTimeout(() => setToast(''), 3000);
+  };
+
+  const copyBillToCart = (bill: Bill, keepCurrentRecipient = false) => {
+    const nextLines = bill.items.flatMap((item) => {
+      const product = products.find((candidate) => candidate.name === item.name);
+      return product ? [{ ...product, lineId: nextCartLineId.current++, quantity: Math.min(item.quantity, product.stock), enteredExpression: `Copied from ${bill.id}` }] : [];
+    });
+    setCart(nextLines);
+    if (!keepCurrentRecipient) {
+      const restaurant = restaurants.find((candidate) => candidate.phone === bill.phone || candidate.name === bill.customer);
+      const customer = customers.find((candidate) => candidate.phone === bill.phone);
+      setSelectedRestaurant(restaurant ?? null);
+      setSelectedCustomer(restaurant ? null : customer ?? null);
+      setResumeDraft(null);
+    }
+    setBillingSession((current) => current + 1);
+    navigate('billing');
+    setToast(`${bill.id} copied into a new bill`);
+    window.setTimeout(() => setToast(''), 3000);
+  };
+
+  const recoveryItems: RecoveryItem[] = [
+    ...pendingPaymentIds.map((id) => ({ id: `payment-${id}`, kind: 'PAYMENT' as const, title: `${id} awaiting UPI`, detail: 'Payment can reconcile without blocking the cashier.', tone: 'amber' as const })),
+    ...failedPrintIds.map((id) => ({ id: `print-${id}`, kind: 'PRINT' as const, title: `${id} did not print`, detail: 'The sale is safe; retry the receipt only.', tone: 'red' as const })),
+    ...syncQueue.map((entry) => ({ id: `sync-${entry.billId}`, kind: 'SYNC' as const, title: `${entry.billId} waiting to sync`, detail: 'Full transaction stored locally with its idempotency key.', tone: 'blue' as const })),
+  ];
+
+  const resolveRecoveryItem = (item: RecoveryItem) => {
+    if (item.kind === 'PAYMENT') setPendingPaymentIds((current) => current.filter((id) => `payment-${id}` !== item.id));
+    if (item.kind === 'PRINT') setFailedPrintIds((current) => current.filter((id) => `print-${id}` !== item.id));
+    if (item.kind === 'SYNC') {
+      const entry = syncQueue.find((candidate) => `sync-${candidate.billId}` === item.id);
+      if (!entry || !isOnline) {
+        setToast('Reconnect before replaying the offline transaction.');
+        window.setTimeout(() => setToast(''), 3000);
+        return;
+      }
+      void persistCompletedBill({ ...entry.payload, offline: true }).then(() => {
+        persistSyncQueue(syncQueue.filter((candidate) => candidate.billId !== entry.billId));
+        setBills((current) => current.map((bill) => bill.id === entry.billId ? { ...bill, syncState: 'SYNCED' } : bill));
+        setToast(`${entry.billId} synchronized exactly once`);
+        window.setTimeout(() => setToast(''), 3000);
+      }).catch(() => {
+        setToast(`${entry.billId} is still safe locally; sync will retry later`);
+        window.setTimeout(() => setToast(''), 3500);
+      });
+    }
+  };
+
+  const selectTheme = (nextTheme: ColorTheme) => {
+    setTheme(nextTheme);
+    document.documentElement.dataset.theme = nextTheme;
+    window.localStorage.setItem('svt-color-theme', nextTheme);
+    setSettingsOpen(false);
   };
 
   return (
@@ -362,8 +551,32 @@ export default function Home() {
           </button>
           <div className="user-card">
             <span className="avatar">AM</span>
-            <span><strong>Arun Manager</strong><small>Administrator</small></span>
-            <button aria-label="Account options">⋮</button>
+            <span className="user-identity"><strong>Arun Manager</strong><small>Administrator</small></span>
+            <button
+              className="settings-button"
+              type="button"
+              aria-label="Appearance settings"
+              aria-haspopup="menu"
+              aria-expanded={settingsOpen}
+              onClick={() => setSettingsOpen((current) => !current)}
+            >
+              <span aria-hidden="true">⚙</span>
+            </button>
+            {settingsOpen && (
+              <div className="theme-menu" role="menu" aria-label="Appearance">
+                <div className="theme-menu-heading"><strong>Appearance</strong><small>Choose your display mode</small></div>
+                <button className={theme === 'light' ? 'selected' : ''} role="menuitemradio" aria-checked={theme === 'light'} onClick={() => selectTheme('light')}>
+                  <span className="theme-preview light" aria-hidden="true">☀</span>
+                  <span><strong>Light</strong><small>Bright workspace</small></span>
+                  <b aria-hidden="true">{theme === 'light' ? '✓' : ''}</b>
+                </button>
+                <button className={theme === 'dark' ? 'selected' : ''} role="menuitemradio" aria-checked={theme === 'dark'} onClick={() => selectTheme('dark')}>
+                  <span className="theme-preview dark" aria-hidden="true">☾</span>
+                  <span><strong>Dark</strong><small>Comfortable in low light</small></span>
+                  <b aria-hidden="true">{theme === 'dark' ? '✓' : ''}</b>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </aside>
@@ -375,7 +588,8 @@ export default function Home() {
           <button className="menu-button" aria-label="Open navigation" onClick={() => setMenuOpen(true)}>☰</button>
           <div className="location-picker"><span className="location-dot" /> Anna Nagar <span>⌄</span></div>
           <div className="topbar-actions">
-            <span className="sync-state"><i /> All changes saved</span>
+            <button className={`sync-state ${isOnline ? '' : 'offline'}`} onClick={() => setIsOnline((current) => !current)} title="Toggle offline simulation"><i /> {isOnline ? 'Online · all changes saved' : 'Offline · sales queue locally'}</button>
+            <button className="recovery-button" onClick={() => setRecoveryOpen(true)}><span>↻</span> Recovery {recoveryItems.length + parkedSessions.length > 0 && <b>{recoveryItems.length + parkedSessions.length}</b>}</button>
             <button className="icon-button" aria-label="Notifications">♧<span className="notification-dot" /></button>
           </div>
         </header>
@@ -386,8 +600,12 @@ export default function Home() {
             active={page === 'billing'}
             products={products}
             cart={cart}
+            bills={bills}
             customers={customers}
             restaurants={restaurants}
+            initialDraft={resumeDraft}
+            parkedSessions={parkedSessions}
+            isOnline={isOnline}
             selectedCustomer={selectedCustomer}
             selectedRestaurant={selectedRestaurant}
             setSelectedCustomer={setSelectedCustomer}
@@ -406,9 +624,13 @@ export default function Home() {
             removeFromCart={removeFromCart}
             clearCart={() => setCart([])}
             completeBill={completeBill}
+            onPark={parkCurrentSession}
+            onResume={resumeParkedSession}
+            onCopyBill={copyBillToCart}
           />
         </div>
-        {page === 'inventory' && <InventoryPage products={products} />}
+        {page === 'inventory' && <InventoryPage products={products} setProducts={setProducts} />}
+        {page === 'receiving' && <SupplierReceivingPage products={products} setProducts={setProducts} />}
         {page === 'deliveries' && <DeliveriesPage deliveries={deliveries} setDeliveries={setDeliveries} restaurants={restaurants} setRestaurants={setRestaurants} onNewBill={(restaurant) => { setSelectedCustomer(null); setSelectedRestaurant(restaurant); setBillingSession((current) => current + 1); navigate('billing'); }} />}
         {page === 'customers' && (
           <CustomersPage
@@ -422,7 +644,14 @@ export default function Home() {
         {page === 'bills' && <BillsPage bills={bills} setSelectedBill={setSelectedBill} />}
       </main>
 
-      {selectedBill && <BillDrawer bill={selectedBill} onClose={() => setSelectedBill(null)} />}
+      {selectedBill && <BillDrawer bill={selectedBill} onClose={() => setSelectedBill(null)} onDuplicate={() => { setSelectedBill(null); copyBillToCart(selectedBill); }} onPrint={() => { setFailedPrintIds((current) => current.filter((id) => id !== selectedBill.id)); setToast(`${selectedBill.id} sent to the receipt printer`); window.setTimeout(() => setToast(''), 3000); }} />}
+      {recoveryOpen && <RecoveryCenter
+        items={recoveryItems}
+        parked={parkedSessions}
+        onClose={() => setRecoveryOpen(false)}
+        onResume={(session) => { setRecoveryOpen(false); resumeParkedSession(session); }}
+        onResolve={resolveRecoveryItem}
+      />}
       {toast && <div className="toast"><span>✓</span>{toast}</div>}
     </div>
   );
@@ -441,8 +670,12 @@ function BillingPage({
   active,
   products,
   cart,
+  bills,
   customers,
   restaurants,
+  initialDraft,
+  parkedSessions,
+  isOnline,
   selectedCustomer,
   selectedRestaurant,
   setSelectedCustomer,
@@ -455,24 +688,34 @@ function BillingPage({
   removeFromCart,
   clearCart,
   completeBill,
+  onPark,
+  onResume,
+  onCopyBill,
 }: {
   active: boolean;
   products: Product[];
   cart: CartLine[];
+  bills: Bill[];
   customers: Customer[];
   restaurants: Restaurant[];
+  initialDraft: BillingRecipientDraft | null;
+  parkedSessions: ParkedBillingSession[];
+  isOnline: boolean;
   selectedCustomer: Customer | null;
   selectedRestaurant: Restaurant | null;
   setSelectedCustomer: (customer: Customer | null) => void;
   setSelectedRestaurant: (restaurant: Restaurant | null) => void;
   updateCustomer: (id: number, details: Pick<Customer, 'name' | 'phone' | 'address'>) => void;
   updateRestaurant: (id: number, details: Pick<Restaurant, 'name' | 'contact' | 'phone' | 'email' | 'address' | 'area' | 'gstin' | 'deliverySlot' | 'creditLimit'>) => void;
-  addToCart: (product: Product, initialQuantity: number) => number | null;
+    addToCart: (product: Product, initialQuantity: number, metadata?: Pick<CartLine, 'enteredExpression' | 'fulfillmentShop' | 'saleMode'>) => number | null;
   setCartQuantity: (lineId: number, quantity: number) => void;
   setCartPrice: (lineId: number, productId: number, price: number) => void;
   removeFromCart: (lineId: number) => void;
   clearCart: () => void;
-  completeBill: (details: { name: string; phone: string; address: string; payment: string; delivery: boolean; restaurant?: RestaurantBillingDetails }) => void;
+  completeBill: (details: { name: string; phone: string; address: string; payment: string; delivery: boolean; restaurant?: RestaurantBillingDetails; durationSeconds?: number; paymentPending?: boolean }) => void;
+  onPark: (session: Omit<ParkedBillingSession, 'id' | 'createdAt'>) => void;
+  onResume: (session: ParkedBillingSession) => void;
+  onCopyBill: (bill: Bill, keepCurrentRecipient?: boolean) => void;
 }) {
   const [itemQuery, setItemQuery] = useState('');
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
@@ -481,42 +724,58 @@ function BillingPage({
   const [productSelectionMessage, setProductSelectionMessage] = useState('');
   const [quantityDrafts, setQuantityDrafts] = useState<Record<number, string>>({});
   const [priceDrafts, setPriceDrafts] = useState<Record<number, string>>({});
-  const [payment, setPayment] = useState('UPI');
-  const [delivery, setDelivery] = useState(false);
-  const [customerStep, setCustomerStep] = useState<'choose' | 'new' | 'existing' | 'review' | 'restaurant-new' | 'restaurant-existing' | 'restaurant-review' | 'ready'>(selectedRestaurant ? 'restaurant-review' : selectedCustomer ? 'review' : 'choose');
-  const [customerKind, setCustomerKind] = useState<'new' | 'existing' | 'new-restaurant' | 'existing-restaurant' | null>(selectedRestaurant ? 'existing-restaurant' : selectedCustomer ? 'existing' : null);
-  const [customerQuery, setCustomerQuery] = useState(selectedRestaurant?.name ?? selectedCustomer?.name ?? '');
+  const [payment, setPayment] = useState(initialDraft?.payment ?? 'UPI');
+  const [delivery, setDelivery] = useState(initialDraft?.delivery ?? false);
+  const [customerStep, setCustomerStep] = useState<'choose' | 'new' | 'existing' | 'review' | 'restaurant-new' | 'restaurant-existing' | 'restaurant-review' | 'ready'>('ready');
+  const [customerKind, setCustomerKind] = useState<'new' | 'existing' | 'new-restaurant' | 'existing-restaurant' | null>(initialDraft?.kind === 'walk-in' ? null : initialDraft?.kind ?? (selectedRestaurant ? 'existing-restaurant' : selectedCustomer ? 'existing' : null));
+  const [customerQuery, setCustomerQuery] = useState(initialDraft?.name ?? selectedRestaurant?.name ?? selectedCustomer?.name ?? '');
   const [restaurantQuery, setRestaurantQuery] = useState(selectedRestaurant?.name ?? '');
   const [visibleCustomerCount, setVisibleCustomerCount] = useState(10);
   const [originalCustomer, setOriginalCustomer] = useState<Customer | null>(selectedCustomer);
   const [originalRestaurant, setOriginalRestaurant] = useState<Restaurant | null>(selectedRestaurant);
-  const [name, setName] = useState(selectedRestaurant?.name ?? selectedCustomer?.name ?? '');
-  const [phone, setPhone] = useState(selectedRestaurant?.phone ?? selectedCustomer?.phone ?? '');
-  const [address, setAddress] = useState(selectedRestaurant?.address ?? selectedCustomer?.address ?? '');
-  const [contact, setContact] = useState(selectedRestaurant?.contact ?? '');
-  const [email, setEmail] = useState(selectedRestaurant?.email ?? '');
-  const [area, setArea] = useState(selectedRestaurant?.area ?? '');
-  const [gstin, setGstin] = useState(selectedRestaurant?.gstin ?? '');
-  const [deliverySlot, setDeliverySlot] = useState(selectedRestaurant?.deliverySlot ?? '4–6 PM');
-  const [creditLimit, setCreditLimit] = useState(String(selectedRestaurant?.creditLimit ?? 50000));
+  const [name, setName] = useState(initialDraft?.name ?? selectedRestaurant?.name ?? selectedCustomer?.name ?? '');
+  const [phone, setPhone] = useState(initialDraft?.phone ?? selectedRestaurant?.phone ?? selectedCustomer?.phone ?? '');
+  const [address, setAddress] = useState(initialDraft?.address ?? selectedRestaurant?.address ?? selectedCustomer?.address ?? '');
+  const [contact, setContact] = useState(initialDraft?.contact ?? selectedRestaurant?.contact ?? '');
+  const [email, setEmail] = useState(initialDraft?.email ?? selectedRestaurant?.email ?? '');
+  const [area, setArea] = useState(initialDraft?.area ?? selectedRestaurant?.area ?? '');
+  const [gstin, setGstin] = useState(initialDraft?.gstin ?? selectedRestaurant?.gstin ?? '');
+  const [deliverySlot, setDeliverySlot] = useState(initialDraft?.deliverySlot ?? selectedRestaurant?.deliverySlot ?? '4–6 PM');
+  const [creditLimit, setCreditLimit] = useState(initialDraft?.creditLimit ?? String(selectedRestaurant?.creditLimit ?? 50000));
+  const [upiState, setUpiState] = useState<'IDLE' | 'WAITING' | 'CONFIRMED'>('IDLE');
+  const [cashTendered, setCashTendered] = useState('');
+  const [splitPayment, setSplitPayment] = useState(false);
+  const [splitAmount, setSplitAmount] = useState('');
+  const [managerOverride, setManagerOverride] = useState(false);
+  const [stockRescue, setStockRescue] = useState<{ product: Product; quantity: number; expression?: string; saleMode?: 'RETAIL' | 'BAG' } | null>(null);
+  const [externalOrderOpen, setExternalOrderOpen] = useState(false);
+  const [externalOrderText, setExternalOrderText] = useState('10kg ponni rice\n₹500 toor dal\n3 x 5kg atta');
+  const [externalLines, setExternalLines] = useState<ExternalOrderLine[]>([]);
+  const billStartedAt = useRef(Date.now());
   const skuInputRef = useRef<HTMLInputElement>(null);
-  const normalizedItemQuery = itemQuery.trim().toLowerCase();
+  const normalizedItemQuery = itemQuery
+    .replace(/(?:₹|rs\.?|inr)\s*\d+(?:\.\d+)?/ig, ' ')
+    .replace(/\d+(?:\.\d+)?\s*(?:kg|g|grams?)\b/ig, ' ')
+    .replace(/\d+(?:\.\d+)?\s*bags?\b/ig, ' ')
+    .replace(/\d+(?:\.\d+)?\s*[x×]\s*/ig, ' ')
+    .trim()
+    .toLowerCase();
   const remainingStockForProduct = (product: Product) => Math.max(0, product.stock - cart.reduce(
     (sum, item) => item.id === product.id ? sum + item.quantity : sum,
     0,
   ));
   const productSuggestions = products
-    .filter((product) => `${product.sku} ${product.name}`.toLowerCase().includes(normalizedItemQuery))
+    .filter((product) => `${product.sku} ${product.barcode ?? ''} ${product.name} ${(product.aliases ?? []).join(' ')}`.toLowerCase().includes(normalizedItemQuery))
     .sort((a, b) => Number(remainingStockForProduct(a) === 0) - Number(remainingStockForProduct(b) === 0))
     .slice(0, 6);
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
   const tax = Number((subtotal * 0.05).toFixed(2));
-  const totalWeight = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const totalWeight = cart.reduce((sum, item) => sum + (item.unitKind === 'COUNTED' ? item.quantity * (item.packSizeKg ?? 0) : item.quantity), 0);
   const customerReady = customerStep === 'ready';
   const customerDetailsValid = Boolean(name.trim() && phone.trim());
   const isRestaurant = customerKind === 'new-restaurant' || customerKind === 'existing-restaurant';
   const restaurantDetailsValid = Boolean(name.trim() && contact.trim() && phone.trim() && address.trim());
-  const partyDetailsValid = isRestaurant ? restaurantDetailsValid : customerDetailsValid;
+  const partyDetailsValid = customerKind === null ? payment !== 'Credit' : isRestaurant ? restaurantDetailsValid : customerDetailsValid;
   const filteredCustomers = customers.filter((customer) =>
     !customerQuery.trim() || `${customer.name} ${customer.phone} ${customer.address}`.toLowerCase().includes(customerQuery.trim().toLowerCase()),
   );
@@ -531,6 +790,17 @@ function BillingPage({
   const filteredRestaurants = restaurants.filter((restaurant) =>
     !restaurantQuery.trim() || `${restaurant.name} ${restaurant.contact} ${restaurant.phone} ${restaurant.area}`.toLowerCase().includes(restaurantQuery.trim().toLowerCase()),
   );
+  const guardrailIssues = evaluateGuardrails(cart, selectedRestaurant ? { outstanding: selectedRestaurant.outstanding, creditLimit: selectedRestaurant.creditLimit, status: selectedRestaurant.status } : null, payment);
+  const guardrailKey = guardrailIssues.map((issue) => `${issue.code}:${issue.lineIds?.join(',') ?? ''}`).join('|');
+  const blockingGuardrails = guardrailIssues.filter((issue) => issue.severity === 'block');
+  const total = subtotal + tax;
+  const cashChange = Math.max(0, Number(cashTendered || 0) - total);
+  const restaurantUsualBill = selectedRestaurant ? bills.find((bill) => bill.phone === selectedRestaurant.phone || bill.customer === selectedRestaurant.name) : undefined;
+  const preferredItem = selectedRestaurant?.name === 'Annapoorna Bhavan' ? 'Ponni Boiled Rice' : selectedCustomer?.topItem;
+  const quickProducts = [...products]
+    .filter((product) => product.stock > 0)
+    .sort((a, b) => Number(b.name === preferredItem) - Number(a.name === preferredItem) || b.stock - a.stock)
+    .slice(0, 5);
 
   useEffect(() => {
     if (active && cart.length > 0 && partyDetailsValid) setCustomerStep('ready');
@@ -554,19 +824,42 @@ function BillingPage({
     return () => window.cancelAnimationFrame(focusFrame);
   }, [cart, pendingProductFocus]);
 
-  const selectProduct = (product: Product) => {
+  useEffect(() => setManagerOverride(false), [guardrailKey]);
+
+  const selectProduct = (product: Product, quantity = 1, expression?: string, skipLineEdit = false, saleMode: 'RETAIL' | 'BAG' = 'RETAIL') => {
     const remainingStock = remainingStockForProduct(product);
-    if (remainingStock === 0) {
-      setProductSelectionMessage(`${product.name} has no stock remaining for another row.`);
+    if (remainingStock < quantity) {
+      if ((product.otherShopStock ?? 0) >= quantity) {
+        setStockRescue({ product, quantity, expression, saleMode });
+        setProductSelectionMessage(`${product.name} is short locally; ${product.otherShopStock} ${product.unit} is available at the other shop.`);
+      } else {
+        setProductSelectionMessage(`Only ${remainingStock} ${product.unit} of ${product.name} remains locally.`);
+      }
       return;
     }
-    const lineId = addToCart(product, Math.min(1, remainingStock));
+    const lineId = addToCart(product, Math.min(quantity, remainingStock), { enteredExpression: expression, saleMode });
     if (lineId === null) return;
     setItemQuery('');
     setSuggestionsOpen(false);
     setActiveSuggestion(0);
-    setPendingProductFocus(lineId);
-    setProductSelectionMessage(`${product.name} added as row ${cart.length + 1}. Enter its weight and price, then press Enter for the next row.`);
+    if (!skipLineEdit) setPendingProductFocus(lineId);
+    else window.requestAnimationFrame(() => skuInputRef.current?.focus());
+    const quantityLabel = saleMode === 'BAG' && product.unitKind === 'WEIGHED' ? `${Math.round(quantity / product.bagWeightKg)} bag(s)` : `${quantity} ${product.unitKind === 'COUNTED' ? 'pack(s)' : 'kg'}`;
+    setProductSelectionMessage(`${product.name} · ${quantityLabel} added${expression ? ` from “${expression}”` : ''}.`);
+  };
+
+  const submitSmartCommand = () => {
+    const parsed = parseBillingCommand(itemQuery, products);
+    if (parsed.error || parsed.productId === null) {
+      setProductSelectionMessage(parsed.error ?? 'Could not understand that command.');
+      return false;
+    }
+    const product = products.find((candidate) => candidate.id === parsed.productId);
+    if (!product) return false;
+    const bagCount = parsed.quantity / product.bagWeightKg;
+    const saleMode = parsed.mode === 'PACK' && product.unitKind === 'WEIGHED' && Math.abs(bagCount - Math.round(bagCount)) < 0.001 ? 'BAG' : 'RETAIL';
+    selectProduct(product, parsed.quantity, parsed.enteredExpression, parsed.mode !== 'DEFAULT', saleMode);
+    return true;
   };
 
   const handleSkuKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
@@ -579,9 +872,11 @@ function BillingPage({
       setActiveSuggestion((current) => Math.max(current - 1, 0));
     } else if (event.key === 'Escape') {
       setSuggestionsOpen(false);
-    } else if (event.key === 'Enter' && productSuggestions.length) {
+    } else if (event.key === 'Enter') {
       event.preventDefault();
-      selectProduct(productSuggestions[activeSuggestion] ?? productSuggestions[0]);
+      const hasQuantitySyntax = /(?:₹|rs\.?|inr|\d\s*(?:kg|g|bags?|x|×))/i.test(itemQuery);
+      if (!hasQuantitySyntax && productSuggestions.length) selectProduct(productSuggestions[activeSuggestion] ?? productSuggestions[0]);
+      else submitSmartCommand();
     }
   };
 
@@ -748,14 +1043,131 @@ function BillingPage({
     setCustomerStep('choose');
   };
 
+  const useWalkIn = () => {
+    setSelectedCustomer(null);
+    setSelectedRestaurant(null);
+    setOriginalCustomer(null);
+    setOriginalRestaurant(null);
+    setCustomerKind(null);
+    setName('');
+    setPhone('');
+    setAddress('');
+    setCustomerStep('ready');
+    window.requestAnimationFrame(() => skuInputRef.current?.focus());
+  };
+
+  const recipientDraft = (): BillingRecipientDraft => ({
+    kind: customerKind ?? 'walk-in',
+    customerId: selectedCustomer?.id,
+    restaurantId: selectedRestaurant?.id,
+    name,
+    phone,
+    address,
+    contact,
+    email,
+    area,
+    gstin,
+    deliverySlot,
+    creditLimit,
+  });
+
+  const parkBill = () => {
+    if (!cart.length) return;
+    onPark({
+      label: name.trim() || `Walk-in · ${cart.length} items`,
+      cart,
+      recipient: recipientDraft(),
+      payment,
+      delivery,
+    });
+  };
+
+  const createUpiQr = () => {
+    setUpiState('WAITING');
+    setProductSelectionMessage(`UPI request created for ${money(total)}. Waiting for signed confirmation…`);
+    window.setTimeout(() => {
+      setUpiState('CONFIRMED');
+      setProductSelectionMessage('UPI payment confirmed automatically. Press F8 to finish the bill.');
+    }, 1600);
+  };
+
+  const attemptCheckout = () => {
+    if (!cart.length || hasInvalidPrice || !partyDetailsValid || (delivery && !address.trim())) return;
+    if (blockingGuardrails.length && !managerOverride) {
+      setProductSelectionMessage('A manager override is required before this bill can be completed.');
+      return;
+    }
+    if (payment === 'Cash' && Number(cashTendered || 0) < total) {
+      setProductSelectionMessage('Enter the cash received before completing the bill.');
+      return;
+    }
+    if (payment === 'UPI' && isOnline && upiState !== 'CONFIRMED') {
+      if (upiState === 'IDLE') createUpiQr();
+      return;
+    }
+    const effectivePayment = splitPayment
+      ? `Cash ${money(Number(splitAmount || 0))} + ${payment}`
+      : payment;
+    completeBill({
+      name,
+      phone,
+      address,
+      payment: effectivePayment,
+      delivery,
+      restaurant: isRestaurant ? { id: originalRestaurant?.id, contact: contact.trim(), email: email.trim(), area: area.trim(), gstin: gstin.trim(), deliverySlot, creditLimit: Number(creditLimit) || 0 } : undefined,
+      durationSeconds: Math.max(1, Math.round((Date.now() - billStartedAt.current) / 1000)),
+      paymentPending: payment === 'UPI' && (!isOnline || upiState !== 'CONFIRMED'),
+    });
+  };
+
+  const analyzeExternalOrder = () => setExternalLines(parseExternalOrder(externalOrderText, products));
+  const importExternalOrder = () => {
+    const approved = externalLines.filter((line) => line.status === 'MATCHED' && line.productId !== null && line.quantity > 0);
+    approved.forEach((line) => {
+      const product = products.find((candidate) => candidate.id === line.productId);
+      if (product) selectProduct(product, line.quantity, line.sourceText, true);
+    });
+    setExternalOrderOpen(false);
+    setProductSelectionMessage(`${approved.length} approved WhatsApp lines added. Uncertain lines were left out.`);
+  };
+
+  useEffect(() => {
+    if (!active) return;
+    const handleShortcut = (event: globalThis.KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const isTyping = target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.tagName === 'SELECT';
+      if (!isTyping && /^[1-5]$/.test(event.key)) {
+        const product = quickProducts[Number(event.key) - 1];
+        if (product) {
+          event.preventDefault();
+          selectProduct(product);
+        }
+      }
+      if (event.key === 'F2') {
+        event.preventDefault();
+        skuInputRef.current?.focus();
+      }
+      if (event.key === 'F4') {
+        event.preventDefault();
+        parkBill();
+      }
+      if (event.key === 'F8') {
+        event.preventDefault();
+        attemptCheckout();
+      }
+    };
+    window.addEventListener('keydown', handleShortcut);
+    return () => window.removeEventListener('keydown', handleShortcut);
+  });
+
   return (
     <div className="page billing-page">
-      <PageTitle eyebrow="Point of sale" title="Create a new bill" description={customerReady ? 'Add items, choose payment and complete the bill.' : 'Select a customer or restaurant before adding items.'} actions={<><span className="bill-number">Next · INV-2049</span><button className="shortcut-button">⌘ K &nbsp; Quick search</button></>} />
+      <PageTitle eyebrow="Express point of sale" title="Create a new bill" description="Start with items. Add a recipient only when delivery, GST, wholesale, or credit requires one." actions={<><span className="bill-number">Next · INV-{2049 + Math.max(0, bills.length - initialBills.length)}</span><button className="shortcut-button" onClick={() => skuInputRef.current?.focus()}>F2 &nbsp; Smart entry</button><button className="shortcut-button" disabled={!cart.length} onClick={parkBill}>F4 &nbsp; Park</button></>} />
 
-      <div className="billing-progress" aria-label="Billing progress">
-        <div className="active"><span>{customerReady ? '✓' : '1'}</span><div><b>Bill recipient</b><small>{customerReady ? 'Details confirmed' : 'Customer or restaurant'}</small></div></div>
-        <i />
-        <div className={customerReady ? 'active' : ''}><span>2</span><div><b>Items &amp; payment</b><small>Build and complete bill</small></div></div>
+      <div className="express-status-bar" aria-label="Express billing status">
+        <span className="express-badge"><i>⚡</i> Express mode</span>
+        <span><b>F2</b> item command</span><span><b>F4</b> park bill</span><span><b>F8</b> checkout</span>
+        <span className={isOnline ? 'positive' : 'warning'}>● {isOnline ? 'Live stock & payments' : 'Offline-safe billing'}</span>
       </div>
 
       {!customerReady && (
@@ -763,6 +1175,7 @@ function BillingPage({
           {customerStep === 'choose' && (
             <>
               <div className="customer-step-head"><span className="step-icon">◎</span><div><p>Step 1 of 2</p><h2>Who is this bill for?</h2><small>Choose a customer or a restaurant account.</small></div></div>
+              <button className="walk-in-choice" onClick={useWalkIn}><span>⚡</span><span><b>Continue as walk-in</b><small>No customer details required. You can add them later.</small></span><i>→</i></button>
               <p className="choice-group-label">Customers</p>
               <div className="customer-choice-grid">
                 <button className="customer-choice" onClick={startNewCustomer}><span className="choice-icon">＋</span><span><b>New customer</b><small>Enter name, phone number and address first.</small></span><i>→</i></button>
@@ -904,22 +1317,27 @@ function BillingPage({
       {customerReady && (
         <>
           <section className="selected-customer-banner">
-            <span className="review-avatar">{initials(name)}</span>
-            <div className="selected-customer-copy"><small>{isRestaurant ? (customerKind === 'new-restaurant' ? 'New restaurant' : 'Restaurant account confirmed') : (customerKind === 'new' ? 'New customer' : 'Existing customer confirmed')}</small><b>{name}</b><span>{isRestaurant && contact ? `${contact} · ` : ''}{phone}{address ? ` · ${address}` : ' · No address added'}</span></div>
-            <div className="selected-customer-actions"><button onClick={() => setCustomerStep(customerKind === 'existing' ? 'review' : customerKind === 'new' ? 'new' : customerKind === 'existing-restaurant' ? 'restaurant-review' : 'restaurant-new')}>Edit details</button><button onClick={changeCustomer}>Change recipient</button></div>
+            <span className="review-avatar">{name ? initials(name) : '⚡'}</span>
+            <div className="selected-customer-copy"><small>{customerKind === null ? 'Express walk-in' : isRestaurant ? (customerKind === 'new-restaurant' ? 'New restaurant' : 'Restaurant account confirmed') : (customerKind === 'new' ? 'New customer' : 'Existing customer confirmed')}</small><b>{name || 'Walk-in customer'}</b><span>{customerKind === null ? 'Add details only if this order needs delivery or a customer record.' : `${isRestaurant && contact ? `${contact} · ` : ''}${phone}${address ? ` · ${address}` : ' · No address added'}`}</span></div>
+            <div className="selected-customer-actions">{customerKind !== null && <button onClick={() => setCustomerStep(customerKind === 'existing' ? 'review' : customerKind === 'new' ? 'new' : customerKind === 'existing-restaurant' ? 'restaurant-review' : 'restaurant-new')}>Edit details</button>}<button onClick={changeCustomer}>{customerKind === null ? 'Add recipient' : 'Change recipient'}</button>{restaurantUsualBill && <button className="usual-order-button" onClick={() => onCopyBill(restaurantUsualBill, true)}>↻ Usual order</button>}</div>
+          </section>
+
+          <section className="billing-speed-strip">
+            <div className="quick-key-group"><span>Predicted quick keys</span>{quickProducts.map((product, index) => <button key={product.id} onClick={() => selectProduct(product)}><kbd>{index + 1}</kbd><b>{product.short}</b><small>{product.name}</small></button>)}</div>
+            <div className="speed-actions"><button onClick={() => setExternalOrderOpen(true)}>◫ WhatsApp order</button>{bills[0] && <button onClick={() => onCopyBill(bills[0])}>↻ Copy {bills[0].id}</button>}{parkedSessions.length > 0 && <button onClick={() => onResume(parkedSessions[0])}>▶ Resume {parkedSessions[0].label}</button>}</div>
           </section>
 
           <div className="billing-layout table-billing-layout">
             <section className="line-items-panel">
               <header className="line-items-heading">
-                <div><p>Bill items</p><h2>Enter items by SKU or name</h2><span>Choose a suggestion, enter the weight and price, then press Enter for the next row.</span></div>
-                <span className="keyboard-hint"><kbd>↵</kbd> Next row</span>
+                <div><p>Smart command bar</p><h2>Type the item and quantity together</h2><span>Try “12kg ponni”, “1 bag ponni”, “₹200 rice”, SKU, barcode, Tamil, or phonetic English.</span></div>
+                <span className="keyboard-hint"><kbd>↵</kbd> Add instantly</span>
               </header>
 
               <div className="line-items-table-wrap">
                 <table className="line-items-table">
                   <colgroup><col className="row-col" /><col className="sku-col" /><col className="item-col" /><col className="weight-col" /><col className="price-col" /><col className="amount-col" /><col className="action-col" /></colgroup>
-                  <thead><tr><th>#</th><th>SKU</th><th>Item name</th><th>Weight (kg)</th><th>Unit price</th><th>Price</th><th><span className="sr-only">Actions</span></th></tr></thead>
+                  <thead><tr><th>#</th><th>SKU / command</th><th>Item name</th><th>Qty / weight</th><th>Unit price</th><th>Price</th><th><span className="sr-only">Actions</span></th></tr></thead>
                   <tbody>
                     {cart.map((item, index) => {
                       const allocatedToOtherLines = cart.reduce((sum, line) =>
@@ -935,30 +1353,36 @@ function BillingPage({
                         <tr className="completed-line" key={item.lineId}>
                           <td><span className="table-row-number">{index + 1}</span></td>
                           <td><span className="line-sku">{item.sku}</span></td>
-                          <td><div className="line-item-name"><span className="line-item-mark" style={{ '--product-color': item.color } as CSSProperties}>{item.short}</span><span><strong>{item.name}</strong><small>{item.category} · {item.stock} kg available</small></span></div></td>
+                          <td><div className="line-item-name"><span className="line-item-mark" style={{ '--product-color': item.color } as CSSProperties}>{item.short}</span><span><strong>{item.name}</strong><small>{item.unitKind === 'WEIGHED' ? `${item.bagStock} bags + ${item.retailStockKg} kg retail` : `${item.stock} packs available`}{item.fulfillmentShop ? ` · reserved at ${item.fulfillmentShop}` : ''}</small>{item.enteredExpression && <em>“{item.enteredExpression}” · {item.saleMode === 'BAG' ? 'sealed bag' : 'retail'}</em>}</span></div></td>
                           <td>
                             <label className={`weight-input ${exceedsStock ? 'invalid' : ''}`}>
                               <input
                                 id={`quantity-${item.lineId}`}
-                                aria-label={`Weight in kilograms for ${item.name}, row ${index + 1}`}
+                                aria-label={`${item.unitKind === 'COUNTED' ? 'Pack quantity' : 'Weight in kilograms'} for ${item.name}, row ${index + 1}`}
                                 type="number"
                                 inputMode="decimal"
-                                min="0.01"
+                                min={item.unitKind === 'COUNTED' ? '1' : '0.25'}
                                 max={availableForLine}
-                                step="0.25"
+                                step={item.unitKind === 'COUNTED' ? '1' : '0.25'}
                                 value={draftWeight}
                                 onChange={(event) => updateWeight(item, event.target.value)}
                                 onBlur={() => commitWeight(item)}
                                 onKeyDown={(event) => {
+                                  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+                                    event.preventDefault();
+                                    const step = item.unitKind === 'COUNTED' ? 1 : 0.25;
+                                    const nextQuantity = stepQuantity(draftWeight, event.key === 'ArrowUp' ? 'up' : 'down', step, step, availableForLine);
+                                    updateWeight(item, String(nextQuantity));
+                                  }
                                   if (event.key === 'Enter') {
                                     event.preventDefault();
                                     commitWeight(item, true);
                                   }
                                 }}
                               />
-                              <span>kg</span>
+                              <span>{item.unitKind === 'COUNTED' ? 'pk' : 'kg'}</span>
                             </label>
-                            {exceedsStock && <small className="stock-error">Max {availableForLine} kg across these rows</small>}
+                            {exceedsStock && <small className="stock-error">Max {availableForLine} across these rows</small>}
                           </td>
                           <td>
                             <label className={`unit-price-input ${invalidPrice ? 'invalid' : ''}`}>
@@ -981,7 +1405,7 @@ function BillingPage({
                                 }}
                               />
                             </label>
-                            <small className={invalidPrice ? 'price-error' : 'price-save-note'}>{invalidPrice ? 'Enter a valid price' : 'Saved for next bill'}</small>
+                            <small className={invalidPrice ? 'price-error' : item.price < item.cost ? 'price-error' : 'price-save-note'}>{invalidPrice ? 'Enter a valid price' : item.price < item.cost ? 'Below cost · override needed' : 'Price locked to this bill'}</small>
                           </td>
                           <td><strong className="line-amount">{money(item.price * item.quantity)}</strong></td>
                           <td><button className="remove-line" aria-label={`Remove ${item.name} from row ${index + 1}`} onClick={() => { removeFromCart(item.lineId); setQuantityDrafts((current) => { const next = { ...current }; delete next[item.lineId]; return next; }); setPriceDrafts((current) => { const next = { ...current }; delete next[item.lineId]; return next; }); }}>×</button></td>
@@ -1004,7 +1428,7 @@ function BillingPage({
                             aria-activedescendant={suggestionsOpen && productSuggestions[activeSuggestion] ? `product-suggestion-${productSuggestions[activeSuggestion].id}` : undefined}
                             autoComplete="off"
                             value={itemQuery}
-                            placeholder="SKU or item"
+                            placeholder="e.g. 500g ponni or scan barcode"
                             onFocus={() => setSuggestionsOpen(true)}
                             onBlur={() => window.setTimeout(() => setSuggestionsOpen(false), 120)}
                             onChange={(event) => { setItemQuery(event.target.value); setActiveSuggestion(0); setSuggestionsOpen(true); }}
@@ -1018,7 +1442,6 @@ function BillingPage({
                                   role="option"
                                   aria-selected={index === activeSuggestion}
                                   className={index === activeSuggestion ? 'active' : ''}
-                                  disabled={remainingStockForProduct(product) === 0}
                                   key={product.id}
                                   id={`product-suggestion-${product.id}`}
                                   onMouseDown={(event) => event.preventDefault()}
@@ -1026,7 +1449,7 @@ function BillingPage({
                                 >
                                   <span className="suggestion-mark" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span>
                                   <span className="suggestion-main"><b>{product.sku}</b><small>{product.name}</small></span>
-                                  <span className="suggestion-stock"><b>{money(product.price)} / kg</b><small className={remainingStockForProduct(product) ? 'positive' : 'negative'}>{remainingStockForProduct(product) ? `${remainingStockForProduct(product)} kg available` : 'No stock remaining'}</small></span>
+                                  <span className="suggestion-stock"><b>{money(product.price)} / {product.unitKind === 'COUNTED' ? 'pack' : 'kg'}</b><small className={remainingStockForProduct(product) ? 'positive' : product.otherShopStock ? 'warning' : 'negative'}>{remainingStockForProduct(product) ? product.unitKind === 'WEIGHED' ? `${product.bagStock} bags · ${product.retailStockKg} kg retail` : `${remainingStockForProduct(product)} local` : product.otherShopStock ? `${product.otherShopStock} at other shop` : 'No stock remaining'}</small></span>
                                 </button>
                               ))}
                               {!productSuggestions.length && <div className="no-product-match"><b>No matching item</b><small>Check the SKU or try a different item name.</small></div>}
@@ -1035,40 +1458,78 @@ function BillingPage({
                           )}
                         </div>
                       </td>
-                      <td><span className="empty-cell-copy">Item name appears after selection</span></td>
-                      <td><span className="disabled-cell">0.00 kg</span></td>
-                      <td><span className="disabled-cell">₹0 / kg</span></td>
+                      <td><span className="empty-cell-copy">One command can fill this row</span></td>
+                      <td><span className="disabled-cell">Auto</span></td>
+                      <td><span className="disabled-cell">Price book</span></td>
                       <td><strong className="disabled-cell">₹0</strong></td>
                       <td />
                     </tr>
                   </tbody>
                 </table>
               </div>
-              <footer className="line-items-footer"><span className={productSelectionMessage ? 'line-item-feedback' : ''} role="status" aria-live="polite">{productSelectionMessage || 'Tip: You can type either the SKU code or the item name.'}</span><button onClick={() => skuInputRef.current?.focus()}>＋ Add another row</button></footer>
+              <footer className="line-items-footer"><span className={productSelectionMessage ? 'line-item-feedback' : ''} role="status" aria-live="polite">{productSelectionMessage || 'Tip: quantities, rupee amounts, aliases, Tamil names, SKUs, and barcodes all work here.'}</span><button onClick={() => skuInputRef.current?.focus()}>＋ Add another row</button></footer>
+              {stockRescue && <div className="stock-rescue"><span>⇄</span><div><b>Stock rescue available</b><small>{stockRescue.product.name} has {stockRescue.product.otherShopStock} {stockRescue.product.unit} at {stockRescue.product.shop === 'Anna Nagar' ? 'Ayyanambakkam' : 'Anna Nagar'}.</small></div><button onClick={() => { const otherShop = stockRescue.product.shop === 'Anna Nagar' ? 'Ayyanambakkam' : 'Anna Nagar'; const lineId = addToCart(stockRescue.product, stockRescue.quantity, { enteredExpression: stockRescue.expression, fulfillmentShop: otherShop, saleMode: stockRescue.saleMode }); if (lineId !== null) { setProductSelectionMessage(`${stockRescue.product.name} reserved at ${otherShop}.`); setStockRescue(null); } }}>Reserve there</button><button className="quiet" onClick={() => setStockRescue(null)}>Dismiss</button></div>}
             </section>
 
             <aside className="cart-panel checkout-panel">
-              <div className="cart-heading"><div><p>Current order</p><h2>{cart.length} {cart.length === 1 ? 'item' : 'items'}</h2></div><button disabled={!cart.length} onClick={() => { clearCart(); setQuantityDrafts({}); setPriceDrafts({}); }}>Clear</button></div>
+              <div className="cart-heading"><div><p>Current order</p><h2>{cart.length} {cart.length === 1 ? 'item' : 'items'}</h2></div><div><button disabled={!cart.length} onClick={parkBill}>Park</button><button disabled={!cart.length} onClick={() => { clearCart(); setQuantityDrafts({}); setPriceDrafts({}); }}>Clear</button></div></div>
               <div className="order-overview"><div><span>Items</span><strong>{cart.length}</strong></div><div><span>Total weight</span><strong>{totalWeight.toLocaleString('en-IN', { maximumFractionDigits: 2 })} kg</strong></div></div>
               <div className="cart-bottom">
                 <label className="delivery-toggle"><span><b>{isRestaurant ? 'Restaurant delivery' : 'Home delivery'}</b><small>Create a delivery job after billing</small></span><input type="checkbox" checked={delivery} onChange={(event) => setDelivery(event.target.checked)} /><i /></label>
-                <div className="payment-methods"><span>Payment method</span><div>{['Cash', 'UPI', 'Card', 'Credit'].map((method) => <button key={method} className={payment === method ? 'selected' : ''} onClick={() => setPayment(method)}>{method}</button>)}</div></div>
+                <div className="payment-methods"><span>Payment method</span><div>{['Cash', 'UPI', 'Card', 'Credit'].map((method) => <button key={method} className={payment === method ? 'selected' : ''} onClick={() => { setPayment(method); setUpiState('IDLE'); }}>{method}</button>)}</div></div>
+                {payment === 'Cash' && <label className="cash-tendered"><span>Cash received</span><div><b>₹</b><input inputMode="decimal" value={cashTendered} onChange={(event) => setCashTendered(event.target.value)} placeholder={String(Math.ceil(total / 10) * 10)} /></div><small>Change due: <b>{money(cashChange)}</b></small></label>}
+                {payment === 'UPI' && <div className={`upi-autopilot ${upiState.toLowerCase()}`}><span className="upi-qr">{upiState === 'CONFIRMED' ? '✓' : '▦'}</span><div><b>{upiState === 'IDLE' ? 'Dynamic UPI ready' : upiState === 'WAITING' ? 'Waiting for confirmation…' : 'Payment confirmed'}</b><small>{upiState === 'IDLE' ? 'F8 creates a one-time QR.' : upiState === 'WAITING' ? 'The cashier can keep this bill open.' : 'Signed callback · RZP-8F2A'}</small></div>{upiState === 'IDLE' && <button onClick={createUpiQr}>Create QR</button>}</div>}
+                <label className="split-toggle"><input type="checkbox" checked={splitPayment} onChange={(event) => setSplitPayment(event.target.checked)} /><span>Split payment</span>{splitPayment && <input aria-label="Cash portion" inputMode="decimal" value={splitAmount} onChange={(event) => setSplitAmount(event.target.value)} placeholder="Cash amount" />}</label>
+                {guardrailIssues.length > 0 && <div className="guardrail-panel"><div><b>Billing guardrails</b><span>{guardrailIssues.length}</span></div>{guardrailIssues.map((issue, index) => <p className={issue.severity} key={`${issue.code}-${index}`}><i>{issue.severity === 'block' ? '!' : 'i'}</i>{issue.message}</p>)}{blockingGuardrails.length > 0 && <button className={managerOverride ? 'approved' : ''} onClick={() => setManagerOverride(true)}>{managerOverride ? '✓ Manager override recorded' : 'Manager override'}</button>}</div>}
                 <div className="totals"><p><span>Subtotal</span><b>{money(subtotal)}</b></p><p><span>GST (5%)</span><b>{money(tax)}</b></p><p className="grand-total"><span>Total</span><b>{money(subtotal + tax)}</b></p></div>
-                <button className="primary-action" disabled={!cart.length || cart.some((item) => item.quantity <= 0) || hasInvalidPrice || !partyDetailsValid || (delivery && !address.trim())} onClick={() => completeBill({ name, phone, address, payment, delivery, restaurant: isRestaurant ? { id: originalRestaurant?.id, contact: contact.trim(), email: email.trim(), area: area.trim(), gstin: gstin.trim(), deliverySlot, creditLimit: Number(creditLimit) || 0 } : undefined })}>Create bill <span>{money(subtotal + tax)}</span></button>
+                <button className="primary-action" disabled={!cart.length || cart.some((item) => item.quantity <= 0) || hasInvalidPrice || !partyDetailsValid || (delivery && !address.trim()) || (blockingGuardrails.length > 0 && !managerOverride) || (payment === 'Cash' && Number(cashTendered || 0) < total)} onClick={attemptCheckout}>{payment === 'UPI' && isOnline && upiState !== 'CONFIRMED' ? (upiState === 'WAITING' ? 'Waiting for UPI…' : 'Generate UPI QR') : !isOnline ? 'Create offline bill' : 'Create bill'} <span>{money(subtotal + tax)}</span></button>
                 {delivery && !address.trim() && <small className="field-hint">Add a delivery address before creating the bill.</small>}
+                {payment === 'Credit' && customerKind === null && <small className="field-hint">Choose a customer or restaurant before using credit.</small>}
+                {!isOnline && <small className="offline-hint">Offline Guardian will save this sale locally and sync it exactly once.</small>}
               </div>
             </aside>
           </div>
         </>
       )}
+      {externalOrderOpen && (
+        <div className="drawer-layer external-order-layer" role="dialog" aria-modal="true" aria-label="Import WhatsApp order">
+          <button className="drawer-backdrop" aria-label="Close importer" onClick={() => setExternalOrderOpen(false)} />
+          <aside className="external-order-drawer">
+            <div className="drawer-head"><div><p>Review-only ingestion</p><h2>WhatsApp to cart</h2></div><button onClick={() => setExternalOrderOpen(false)} aria-label="Close">×</button></div>
+            <div className="import-source-tabs"><button className="selected">Aa Text</button><button onClick={() => setProductSelectionMessage('Photo OCR uses the same review queue once a file is attached.')}>▧ Photo / sheet</button><button onClick={() => setProductSelectionMessage('Voice transcription uses the same review queue before cart import.')}>◉ Voice note</button></div>
+            <label className="external-order-input"><span>Paste the restaurant order</span><textarea value={externalOrderText} onChange={(event) => setExternalOrderText(event.target.value)} /><small>Nothing changes stock, price, or payment until a cashier approves the matches.</small></label>
+            <button className="analyze-order" disabled={!externalOrderText.trim()} onClick={analyzeExternalOrder}>Analyze order</button>
+            <div className="external-match-list">
+              {externalLines.map((line) => {
+                const product = products.find((candidate) => candidate.id === line.productId);
+                return <article className={line.status.toLowerCase()} key={line.id}><span className="match-state">{line.status === 'MATCHED' ? '✓' : line.status === 'REVIEW' ? '?' : '!'}</span><div><b>{line.sourceText}</b><small>{product ? `${product.name} · ${line.quantity} ${product.unitKind === 'COUNTED' ? 'pack(s)' : 'kg'}` : line.error}</small></div><span className="confidence">{Math.round(line.confidence * 100)}%</span>{line.status === 'REVIEW' && <button onClick={() => setExternalLines((current) => current.map((candidate) => candidate.id === line.id ? { ...candidate, status: 'MATCHED' } : candidate))}>Approve</button>}</article>;
+              })}
+              {!externalLines.length && <div className="external-empty"><span>◫</span><b>Paste and analyze an order</b><small>Matches and confidence will appear here.</small></div>}
+            </div>
+            <div className="external-drawer-actions"><span>{externalLines.filter((line) => line.status === 'MATCHED').length} approved · {externalLines.filter((line) => line.status !== 'MATCHED').length} need attention</span><button disabled={!externalLines.some((line) => line.status === 'MATCHED')} onClick={importExternalOrder}>Add approved lines →</button></div>
+          </aside>
+        </div>
+      )}
       </div>
   );
 }
 
-function InventoryPage({ products }: { products: Product[] }) {
+function InventoryPage({ products, setProducts }: { products: Product[]; setProducts: React.Dispatch<React.SetStateAction<Product[]>> }) {
+  const [section, setSection] = useState<'overview' | 'add'>('overview');
+  const [intakeMode, setIntakeMode] = useState<'choice' | 'new' | 'existing'>('choice');
   const [search, setSearch] = useState('');
   const [shop, setShop] = useState('All shops');
   const [status, setStatus] = useState('All stock');
+  const [itemSearch, setItemSearch] = useState('');
+  const [selectedProductId, setSelectedProductId] = useState<number | null>(null);
+  const [itemName, setItemName] = useState('');
+  const [sku, setSku] = useState('');
+  const [category, setCategory] = useState('Grains');
+  const [intakeShop, setIntakeShop] = useState('Anna Nagar');
+  const [bags, setBags] = useState('');
+  const [bagWeight, setBagWeight] = useState('');
+  const [purchasePrice, setPurchasePrice] = useState('');
+  const [intakeMessage, setIntakeMessage] = useState('');
   const visible = products.filter((product) =>
     `${product.name} ${product.sku}`.toLowerCase().includes(search.toLowerCase()) &&
     (shop === 'All shops' || product.shop === shop) &&
@@ -1076,16 +1537,142 @@ function InventoryPage({ products }: { products: Product[] }) {
   );
   const low = products.filter((product) => stockStatus(product) === 'Low stock').length;
   const out = products.filter((product) => stockStatus(product) === 'Out of stock').length;
-  const units = products.reduce((sum, product) => sum + product.stock, 0);
+  const sealedBags = products.reduce((sum, product) => sum + product.bagStock, 0);
+  const retailKg = products.reduce((sum, product) => sum + product.retailStockKg, 0);
+  const selectedProduct = products.find((product) => product.id === selectedProductId) ?? null;
+  const matchingProducts = products.filter((product) =>
+    `${product.name} ${product.sku}`.toLowerCase().includes(itemSearch.trim().toLowerCase()),
+  ).slice(0, 6);
+  const bagCount = Number(bags);
+  const weightPerBag = Number(bagWeight);
+  const pricePerBag = Number(purchasePrice);
+  const totalWeight = bagCount > 0 && weightPerBag > 0 ? bagCount * weightPerBag : 0;
+  const totalCost = bagCount > 0 && pricePerBag > 0 ? bagCount * pricePerBag : 0;
+  const validQuantity = bagCount > 0 && Number.isInteger(bagCount) && weightPerBag > 0 && pricePerBag > 0;
+  const newSkuExists = products.some((product) => product.sku.toLowerCase() === sku.trim().toLowerCase());
+  const bagWeightMismatch = Boolean(selectedProduct && weightPerBag > 0 && Math.abs(selectedProduct.bagWeightKg - weightPerBag) > 0.01);
+
+  const resetIntake = () => {
+    setIntakeMode('choice');
+    setItemSearch('');
+    setSelectedProductId(null);
+    setItemName('');
+    setSku('');
+    setCategory('Grains');
+    setBags('');
+    setBagWeight('');
+    setPurchasePrice('');
+  };
+
+  const showIntakeSuccess = (message: string) => {
+    setIntakeMessage(message);
+    window.setTimeout(() => setIntakeMessage(''), 4500);
+  };
+
+  const addExistingStock = () => {
+    if (!selectedProduct || !validQuantity || bagWeightMismatch) return;
+    setProducts((current) => current.map((product) => product.id === selectedProduct.id ? {
+      ...product,
+      bagStock: product.bagStock + bagCount,
+      stock: product.unitKind === 'WEIGHED' ? Number(((product.bagStock + bagCount) * product.bagWeightKg + product.retailStockKg).toFixed(2)) : product.stock + bagCount,
+      cost: Number((product.unitKind === 'WEIGHED' ? pricePerBag / weightPerBag : pricePerBag).toFixed(2)),
+      packSizeKg: product.unitKind === 'COUNTED' ? weightPerBag : product.packSizeKg,
+    } : product));
+    showIntakeSuccess(`${bags} sealed bags of ${selectedProduct.name} added to the Bags column · retail stock unchanged`);
+    resetIntake();
+  };
+
+  const addNewStock = () => {
+    if (!itemName.trim() || !sku.trim() || newSkuExists || !validQuantity) return;
+    const normalizedName = itemName.trim();
+    const costPerKg = pricePerBag / weightPerBag;
+    const newProduct: Product = {
+      id: Math.max(0, ...products.map((product) => product.id)) + 1,
+      name: normalizedName,
+      short: initials(normalizedName) || 'NI',
+      sku: sku.trim().toUpperCase(),
+      category,
+      unit: 'kg',
+      unitKind: 'WEIGHED',
+      price: Number(costPerKg.toFixed(2)),
+      cost: Number(costPerKg.toFixed(2)),
+      stock: Number(totalWeight.toFixed(2)),
+      bagStock: bagCount,
+      retailStockKg: 0,
+      bagWeightKg: weightPerBag,
+      reorder: Math.max(10, Math.round(totalWeight * 0.2)),
+      color: '#d7bd75',
+      shop: intakeShop,
+    };
+    setProducts((current) => [newProduct, ...current]);
+    showIntakeSuccess(`${normalizedName} created · ${bags} sealed bags added and retail starts at 0 kg`);
+    resetIntake();
+  };
 
   return (
     <div className="page">
-      <PageTitle eyebrow="Stock control" title="Inventory" description="Live stock position across both shops." actions={<button className="secondary-action">↥ Export report</button>} />
+      <div className="subpage-tabs inventory-tabs" role="tablist" aria-label="Inventory sections">
+        <button role="tab" aria-selected={section === 'overview'} className={section === 'overview' ? 'selected' : ''} onClick={() => setSection('overview')}><span>□</span> Inventory overview <b>{products.length}</b></button>
+        <button role="tab" aria-selected={section === 'add'} className={section === 'add' ? 'selected' : ''} onClick={() => setSection('add')}><span>＋</span> Add inventory</button>
+      </div>
+      {section === 'add' ? (
+        <>
+          <PageTitle eyebrow="Stock intake" title="Add inventory" description="Record a new delivery and keep your stock accurate." actions={<button className="secondary-action" onClick={() => setSection('overview')}>← Back to inventory</button>} />
+          {intakeMessage && <div className="inventory-success" role="status"><span>✓</span><div><strong>Inventory updated</strong><small>{intakeMessage}</small></div></div>}
+          {intakeMode === 'choice' ? (
+            <section className="inventory-intake-card intake-choice-panel">
+              <div className="intake-card-heading"><span className="step-icon">＋</span><div><p>Choose an option</p><h2>What are you adding?</h2><small>Create a product for the first time or add stock to an item already in your catalog.</small></div></div>
+              <div className="intake-choice-grid">
+                <button className="intake-choice" onClick={() => setIntakeMode('new')}><span className="choice-icon">◇</span><span><b>Add new item</b><small>Create a new product and add its first delivery to inventory.</small></span><i>→</i></button>
+                <button className="intake-choice" onClick={() => setIntakeMode('existing')}><span className="choice-icon existing">⌕</span><span><b>Add existing item</b><small>Find an item by SKU or name and increase its current stock.</small></span><i>→</i></button>
+              </div>
+            </section>
+          ) : (
+            <section className="inventory-intake-card">
+              <div className="intake-card-heading"><button className="step-back" onClick={resetIntake} aria-label="Back to inventory options">←</button><div><p>{intakeMode === 'new' ? 'New catalog item' : 'Existing catalog item'}</p><h2>{intakeMode === 'new' ? 'Add a new item' : 'Add stock to an existing item'}</h2><small>{intakeMode === 'new' ? 'Enter the item details and this delivery information.' : 'Search by SKU or item name, then record what arrived.'}</small></div></div>
+              <div className="inventory-intake-layout">
+                <div className="intake-fields">
+                  {intakeMode === 'existing' ? (
+                    <div className="existing-item-picker">
+                      <label><span>Find item by SKU or name</span><div className="existing-item-search"><b>⌕</b><input value={itemSearch} onChange={(event) => { setItemSearch(event.target.value); setSelectedProductId(null); }} placeholder="Example: RIC-PON-01 or Ponni Rice" autoFocus /></div></label>
+                      {itemSearch && !selectedProduct && <div className="existing-item-results">{matchingProducts.length ? matchingProducts.map((product) => <button key={product.id} onClick={() => { setSelectedProductId(product.id); setItemSearch(`${product.name} · ${product.sku}`); setIntakeShop(product.shop); setBagWeight(String(product.bagWeightKg)); }}><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><span><strong>{product.name}</strong><small>{product.sku} · {product.shop}</small></span><i>{product.bagStock} bags · {product.retailStockKg} kg retail</i></button>) : <div className="picker-empty">No item matches that SKU or name.</div>}</div>}
+                      {selectedProduct && <div className="selected-inventory-item"><span className="mini-product" style={{ '--product-color': selectedProduct.color } as CSSProperties}>{selectedProduct.short}</span><div><small>Selected item</small><strong>{selectedProduct.name}</strong><span>{selectedProduct.sku} · {selectedProduct.bagStock} sealed bags · {selectedProduct.retailStockKg} kg retail</span></div><button onClick={() => { setSelectedProductId(null); setItemSearch(''); setBagWeight(''); }}>Change</button></div>}
+                    </div>
+                  ) : (
+                    <div className="new-item-grid">
+                      <label><span>Item name</span><input value={itemName} onChange={(event) => setItemName(event.target.value)} placeholder="Example: Sona Masoori Rice" autoFocus /></label>
+                      <label><span>SKU</span><input value={sku} onChange={(event) => setSku(event.target.value)} placeholder="Example: RIC-SON-01" />{newSkuExists && <small className="field-error">This SKU already exists. Add it as an existing item instead.</small>}</label>
+                      <label><span>Category</span><select value={category} onChange={(event) => setCategory(event.target.value)}><option>Grains</option><option>Pulses</option><option>Flour</option><option>Spices</option><option>Oils</option><option>Sweeteners</option><option>Other</option></select></label>
+                      <label><span>Receiving shop</span><select value={intakeShop} onChange={(event) => setIntakeShop(event.target.value)}><option>Anna Nagar</option><option>Ayyanambakkam</option></select></label>
+                    </div>
+                  )}
+                  <div className="delivery-fields">
+                    <p>Delivery details</p>
+                    <div>
+                      <label><span>Number of bags</span><div className="number-field"><input type="number" min="1" step="1" inputMode="numeric" value={bags} onChange={(event) => setBags(event.target.value)} placeholder="0" /><b>bags</b></div></label>
+                      <label><span>Weight of each bag</span><div className="number-field"><input type="number" min="0.01" step="0.01" inputMode="decimal" value={bagWeight} onChange={(event) => setBagWeight(event.target.value)} placeholder="0.00" /><b>kg</b></div>{bagWeightMismatch && <small className="field-error">This item uses {selectedProduct?.bagWeightKg} kg bags. Use the same bag weight.</small>}</label>
+                      <label><span>Purchase price per bag</span><div className="number-field price-field"><b>₹</b><input type="number" min="0.01" step="0.01" inputMode="decimal" value={purchasePrice} onChange={(event) => setPurchasePrice(event.target.value)} placeholder="0.00" /></div></label>
+                    </div>
+                  </div>
+                </div>
+                <aside className="intake-summary">
+                  <div className="summary-icon">▥</div><p>Delivery summary</p>
+                  <dl><div><dt>Bags received</dt><dd>{bagCount > 0 ? bagCount : '—'}</dd></div><div><dt>Weight per bag</dt><dd>{weightPerBag > 0 ? `${weightPerBag.toLocaleString('en-IN')} kg` : '—'}</dd></div><div className="summary-emphasis"><dt>Total weight</dt><dd>{totalWeight > 0 ? `${totalWeight.toLocaleString('en-IN')} kg` : '—'}</dd></div><div><dt>Price per bag</dt><dd>{pricePerBag > 0 ? money(pricePerBag) : '—'}</dd></div><div className="summary-total"><dt>Total purchase cost</dt><dd>{totalCost > 0 ? money(totalCost) : '—'}</dd></div></dl>
+                  <small>Purchase cost is recorded from the price paid for each bag.</small>
+                  <button className="save-intake" disabled={!validQuantity || bagWeightMismatch || (intakeMode === 'existing' ? !selectedProduct : !itemName.trim() || !sku.trim() || newSkuExists)} onClick={intakeMode === 'existing' ? addExistingStock : addNewStock}>Add to inventory <span>→</span></button>
+                </aside>
+              </div>
+            </section>
+          )}
+        </>
+      ) : (
+      <>
+      <PageTitle eyebrow="Stock control" title="Inventory" description="Live stock position across both shops." actions={<><button className="secondary-action">↥ Export report</button><button className="primary-small" onClick={() => setSection('add')}>＋ Add inventory</button></>} />
       <div className="metric-grid">
         <MetricCard label="Total products" value={String(products.length)} note="Across 6 categories" tone="green" icon="□" />
-        <MetricCard label="Units on hand" value={String(units)} note="Available to sell" tone="blue" icon="▥" />
-        <MetricCard label="Low stock" value={String(low)} note="Needs attention" tone="amber" icon="!" />
-        <MetricCard label="Out of stock" value={String(out)} note="Reorder now" tone="red" icon="×" />
+        <MetricCard label="Sealed bags" value={String(sealedBags)} note="Available for bag sales" tone="blue" icon="▥" />
+        <MetricCard label="Retail display" value={`${retailKg} kg`} note="Open stock for kilo sales" tone="amber" icon="◒" />
+        <MetricCard label="Needs attention" value={String(low + out)} note={`${out} out of stock`} tone="red" icon="!" />
       </div>
       <section className="data-card">
         <div className="data-toolbar">
@@ -1093,14 +1680,16 @@ function InventoryPage({ products }: { products: Product[] }) {
           <div className="filters"><select value={shop} onChange={(event) => setShop(event.target.value)}><option>All shops</option><option>Anna Nagar</option><option>Ayyanambakkam</option></select><select value={status} onChange={(event) => setStatus(event.target.value)}><option>All stock</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div>
         </div>
         <div className="table-wrap">
-          <table><thead><tr><th>Product</th><th>SKU</th><th>Shop</th><th>Stock level</th><th>On hand</th><th>Value</th><th>Status</th></tr></thead>
+          <table className="inventory-table"><thead><tr><th>Product</th><th>SKU</th><th>Shop</th><th>Bags</th><th>Retail</th><th>Bag weight</th><th>Total available</th><th>Value</th><th>Status</th></tr></thead>
             <tbody>{visible.map((product) => { const productStatus = stockStatus(product); const percentage = Math.min(100, (product.stock / Math.max(product.reorder * 3, 1)) * 100); return (
-              <tr key={product.id}><td><div className="product-cell"><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><div><strong>{product.name}</strong><small>{product.category} · {product.unit}</small></div></div></td><td><span className="mono">{product.sku}</span></td><td>{product.shop}</td><td><div className="stock-bar"><i style={{ width: `${percentage}%` }} className={productStatus === 'In stock' ? '' : productStatus === 'Low stock' ? 'low' : 'out'} /></div></td><td><strong>{product.stock}</strong> <small>{product.unit}</small></td><td>{money(product.stock * product.price)}</td><td><StatusPill value={productStatus} /></td></tr>
+              <tr key={product.id}><td><div className="product-cell"><span className="mini-product" style={{ '--product-color': product.color } as CSSProperties}>{product.short}</span><div><strong>{product.name}</strong><small>{product.category} · {product.unit}</small></div></div></td><td><span className="mono">{product.sku}</span></td><td>{product.shop}</td><td><div className="split-stock-cell bags-stock"><strong>{product.bagStock}</strong><small>sealed bags</small></div></td><td><div className={`split-stock-cell retail-stock ${product.retailStockKg > 0 ? 'open' : ''}`}><strong>{product.unitKind === 'WEIGHED' ? product.retailStockKg : '—'}</strong><small>{product.unitKind === 'WEIGHED' ? 'kg open' : 'not sold loose'}</small></div></td><td><strong>{product.bagWeightKg} kg</strong><small> / bag</small></td><td><div className="total-stock-cell"><strong>{product.stock} {product.unitKind === 'COUNTED' ? 'packs' : 'kg'}</strong><div className="stock-bar"><i style={{ width: `${percentage}%` }} className={productStatus === 'In stock' ? '' : productStatus === 'Low stock' ? 'low' : 'out'} /></div></div></td><td>{money(product.stock * product.price)}</td><td><StatusPill value={productStatus} /></td></tr>
             ); })}</tbody>
           </table>
         </div>
         <div className="table-footer"><span>Showing {visible.length} of {products.length} products</span><span>Updated just now</span></div>
       </section>
+      </>
+      )}
     </div>
   );
 }
@@ -1331,7 +1920,7 @@ function StatusPill({ value }: { value: string }) {
   return <span className={`status-pill ${key}`}><i />{value}</span>;
 }
 
-function BillDrawer({ bill, onClose }: { bill: Bill; onClose: () => void }) {
+function BillDrawer({ bill, onClose, onDuplicate, onPrint }: { bill: Bill; onClose: () => void; onDuplicate: () => void; onPrint: () => void }) {
   const subtotal = Math.round(bill.amount / 1.05);
   return (
     <div className="drawer-layer" role="dialog" aria-modal="true" aria-label={`Bill ${bill.id}`}>
@@ -1342,8 +1931,22 @@ function BillDrawer({ bill, onClose }: { bill: Bill; onClose: () => void }) {
         <div className="receipt-info"><div><span>Billed to</span><strong>{bill.customer}</strong><small>{bill.phone}</small></div><div><span>Issued</span><strong>{bill.date}</strong><small>{bill.time}</small></div></div>
         <div className="receipt-lines"><div className="receipt-row header"><span>Item</span><span>Qty</span><span>Amount</span></div>{bill.items.map((item) => <div className="receipt-row" key={item.name}><span><strong>{item.name}</strong><small>{money(item.price)} each</small></span><span>{item.quantity}</span><strong>{money(item.price * item.quantity)}</strong></div>)}</div>
         <div className="receipt-totals"><p><span>Subtotal</span><b>{money(subtotal)}</b></p><p><span>GST (5%)</span><b>{money(bill.amount - subtotal)}</b></p><p><span>Total</span><b>{money(bill.amount)}</b></p></div>
-        <div className="receipt-payment"><div><span>Payment</span><strong>{bill.payment}</strong></div><StatusPill value={bill.status} /></div>
-        <div className="drawer-actions"><button>Print bill</button><button>Share receipt</button></div>
+        <div className="receipt-payment"><div><span>Payment</span><strong>{bill.payment}</strong><small>{bill.syncState === 'SYNC_REQUIRED' ? 'Queued locally' : bill.durationSeconds ? `Completed in ${bill.durationSeconds}s` : 'Synced'}</small></div><StatusPill value={bill.status} /></div>
+        <div className="drawer-actions"><button onClick={onPrint}>Print bill</button><button onClick={onDuplicate}>Duplicate bill</button><button>Share receipt</button></div>
+      </aside>
+    </div>
+  );
+}
+
+function RecoveryCenter({ items, parked, onClose, onResume, onResolve }: { items: RecoveryItem[]; parked: ParkedBillingSession[]; onClose: () => void; onResume: (session: ParkedBillingSession) => void; onResolve: (item: RecoveryItem) => void }) {
+  return (
+    <div className="drawer-layer" role="dialog" aria-modal="true" aria-label="Cashier recovery center">
+      <button className="drawer-backdrop" aria-label="Close recovery center" onClick={onClose} />
+      <aside className="recovery-drawer">
+        <div className="drawer-head"><div><p>Cashier safety net</p><h2>Recovery center</h2></div><button onClick={onClose} aria-label="Close">×</button></div>
+        <div className="recovery-summary"><div><strong>{parked.length}</strong><span>Parked bills</span></div><div><strong>{items.filter((item) => item.kind === 'PAYMENT').length}</strong><span>Payments</span></div><div><strong>{items.filter((item) => item.kind === 'SYNC').length}</strong><span>Sync queue</span></div></div>
+        <section className="recovery-section"><div className="section-title"><div><p>Resume work</p><h2>Parked bills</h2></div></div>{parked.length ? parked.map((session) => <article className="recovery-row" key={session.id}><span className="recovery-kind blue">Ⅱ</span><div><b>{session.label}</b><small>{session.cart.length} lines · {new Date(session.createdAt).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}</small></div><button onClick={() => onResume(session)}>Resume</button></article>) : <p className="recovery-empty">No parked bills.</p>}</section>
+        <section className="recovery-section"><div className="section-title"><div><p>Needs attention</p><h2>Payments, prints &amp; sync</h2></div></div>{items.length ? items.map((item) => <article className="recovery-row" key={item.id}><span className={`recovery-kind ${item.tone}`}>{item.kind === 'PAYMENT' ? '₹' : item.kind === 'PRINT' ? '▤' : '↻'}</span><div><b>{item.title}</b><small>{item.detail}</small></div><button onClick={() => onResolve(item)}>{item.kind === 'PRINT' ? 'Retry' : item.kind === 'SYNC' ? 'Sync now' : 'Reconcile'}</button></article>) : <p className="recovery-empty">Everything is reconciled and synchronized.</p>}</section>
       </aside>
     </div>
   );

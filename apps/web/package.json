@@ -5,7 +5,8 @@
   "scripts": {
     "build": "next build",
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
-    "start": "next start --hostname 0.0.0.0 --port 3000"
+    "start": "next start --hostname 0.0.0.0 --port 3000",
+    "test": "node --experimental-strip-types --test app/*.test.ts"
   },
   "dependencies": {
     "next": "^16.3.0",
